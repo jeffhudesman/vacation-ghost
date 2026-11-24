@@ -1,0 +1,23 @@
+# Fictional dates for the simulator. Choose your own local trip dates on the Pi.
+[trip]
+start = 2030-06-10T09:00:00Z
+end = 2030-06-13T13:00:00Z
+timezone = "Etc/UTC"
+
+[routine]
+rooms = ["kitchen", "living"]
+sunset = "19:40"
+bedtime = "23:00"
+seed = "vacation-ghost"
+
+# For Pi use, add this block to your private local config and substitute the
+# actual LAN addresses. Keep your trip dates and hardware addresses private.
+# [hardware]
+# led_count = 30
+# led_pin = 18
+# sounds_dir = "sounds"
+# volume = 0.08
+#
+# [hardware.plugs]
+# kitchen = "http://192.168.1.20"
+# living = "http://192.168.1.21"
