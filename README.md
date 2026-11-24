@@ -1,5 +1,7 @@
 # Vacation Ghost
 
+**Developer preview.** The simulator is ready to try. Physical Raspberry Pi testing is pending.
+
 Vacation Ghost makes an empty house look and sound lived-in while you’re away. A Raspberry Pi runs a local, time-zone-aware routine for two lamps, an LED strip that casts a TV-like glow, and quiet household sounds. Evening activity follows sunset, moves between rooms one lamp at a time, and winds down at a bedtime that varies each night. The Pi writes morning notes and a trip summary locally.
 
 The first version takes manually entered trip dates. It uses no microphone or camera and collects no audio. The schedule and reports stay on the device. Other local applications can read the JSON reports.
@@ -57,3 +59,7 @@ See [Contributing](CONTRIBUTING.md) for the simulator workflow and test commands
 Run the simulator from the checkout with Python 3.11+, or install the Linux CLI with `python3 -m pip install .` in a virtual environment. The source checkout also contains the cue generator and service files.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow. Vacation Ghost is available under the [MIT License](LICENSE).
+
+## Project website
+
+From the checkout, run `python3 -m http.server --bind 127.0.0.1 --directory site 4173` and open `http://127.0.0.1:4173` on the same machine. The website runs from the [site directory](site/).
