@@ -28,6 +28,7 @@ class PlugError(RuntimeError):
 
 class Outputs(Protocol):
     def set_lamp(self, room: str, on: bool) -> None: ...
+    def lamp_status(self, room: str) -> bool: ...
     def set_glow(self, rgb: tuple[int, int, int]) -> None: ...
     def play_sound(self, cue: str) -> None: ...
     def stop_sound(self) -> None: ...
@@ -70,12 +71,6 @@ class _OffResult:
 def _turn_outputs_off(rooms: tuple[str, str], outputs: Outputs) -> _OffResult:
     """Attempt every output with no dependency on report storage."""
     result = _OffResult(set(), [], [])
-    for device, action in (
-        ("sound", outputs.stop_sound),
-        ("glow", lambda: outputs.set_glow((0, 0, 0))),
-    ):
-        if not _try_peripheral(device, action):
-            result.peripheral_faults.append(device)
     for room in rooms:
         try:
             _switch(outputs, room, False)
@@ -83,6 +78,12 @@ def _turn_outputs_off(rooms: tuple[str, str], outputs: Outputs) -> _OffResult:
             result.plug_errors.append(str(exc))
         else:
             result.rooms_off.add(room)
+    for device, action in (
+        ("sound", outputs.stop_sound),
+        ("glow", lambda: outputs.set_glow((0, 0, 0))),
+    ):
+        if not _try_peripheral(device, action):
+            result.peripheral_faults.append(device)
     return result
 
 
@@ -152,6 +153,25 @@ class Controller:
             _switch(self.outputs, room, True)
             self.room = room
             self.reports.lamp_changed(now, room)
+
+    def verify_lamp(self, now: datetime) -> None:
+        """Detect an unexpected relay change before applying the current scene."""
+        room = self.room
+        if room is None:
+            return
+        try:
+            on = self.outputs.lamp_status(room)
+        except (RuntimeError, OSError, ValueError) as exc:
+            raise PlugError(f"{room}: {exc}") from exc
+        if on:
+            return
+        logger.warning("Lamp in %s went off during an active scene.", room)
+        self.room = None
+        self.reports.lamp_changed(now, None)
+        self.reports.record_device_fault(now, "plug")
+        for other in self.rooms:
+            if other != room:
+                _switch(self.outputs, other, False)
 
     def glow(self, now: datetime, scene: str) -> None:
         if not scene:
@@ -299,13 +319,13 @@ def run(
         )
 
     reservation = reservation or OutputReservation(reports.state_dir)
-    if reservation.engaged and not reservation.path.exists():
-        reservation.engage()
     previous = clock()
     next_heartbeat = monotonic()
     initialized = False
     plug_failures = 0
     try:
+        if reservation.engaged and not reservation.path.exists():
+            reservation.engage()
         while not stop.is_set():
             now = clock()
             if (request := disarm_requested() if disarm_requested else None) is not None:
@@ -313,6 +333,8 @@ def run(
             if reports.disarmed_at is not None or utc(now) >= routine.end:
                 break
 
+            tick = monotonic()
+            heartbeat = tick >= next_heartbeat
             try:
                 if routine.active(now):
                     if not initialized:
@@ -323,6 +345,8 @@ def run(
                         else:
                             reports.record_device_fault(clock(), "shutdown", shutdown_unconfirmed=True)
                         initialized = True
+                    elif heartbeat and can_start():
+                        controller.verify_lamp(now)
                     if can_start():
                         now = clock()
                         room, scene, cue = routine.desired(now, previous)
@@ -344,7 +368,7 @@ def run(
             except PlugError as exc:
                 logger.warning("Plug fault: %s", exc)
                 reports.record_device_fault(clock(), "plug", shutdown_unconfirmed=True)
-                reports.status(clock(), False, controller.room, force=True)
+                reports.status(clock(), False, None, force=True)
                 initialized = False
                 if plug_failures >= len(RETRY_DELAYS):
                     raise
@@ -353,11 +377,12 @@ def run(
                 previous = clock()
                 continue
 
-            tick = monotonic()
-            heartbeat = tick >= next_heartbeat
-            reports.status(clock(), initialized, controller.room, force=heartbeat)
+            report_at = clock()
+            if utc(report_at) >= routine.end:
+                break
+            reports.status(report_at, initialized, controller.room, force=heartbeat)
             if heartbeat:
-                reports.publish_due(clock())
+                reports.publish_due(report_at)
                 next_heartbeat = tick + HEARTBEAT.total_seconds()
             previous = now
             stop.wait(0.15 if initialized else 1)

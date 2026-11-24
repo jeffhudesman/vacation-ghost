@@ -1,5 +1,5 @@
 import unittest
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from vacation_ghost.schedule import build_day
@@ -68,3 +68,37 @@ class DayPlanTests(unittest.TestCase):
                         self.assertEqual(lamp, self.rooms[1])
                 self.assertEqual(scene_changes, [True, False, True, False])
                 self.assertEqual((lamp, glow), ("", ""))
+
+    def test_spring_clock_gap_preserves_cue_order_and_uses_real_times(self):
+        day = date(2026, 9, 5)
+        tz = ZoneInfo("Pacific/Easter")
+        plan = build_day(day, tz, self.rooms, sunset_fallback=time(22), bedtime=time(23, 55))
+        self.assertEqual(plan.sunset, datetime.combine(day, time(23), tz))
+        instants = [event.at.astimezone(UTC) for event in plan.events]
+        self.assertEqual(instants, sorted(instants))
+        for event, instant in zip(plan.events, instants):
+            self.assertEqual(event.at.date(), day)
+            self.assertNotEqual(event.at.hour, 22)
+            self.assertEqual(event.at.isoformat(), instant.astimezone(tz).isoformat())
+        scene_changes = [bool(event.value) for event in plan.events if event.kind == "glow"]
+        self.assertEqual(scene_changes, [True, False, True, False])
+        self.assertEqual((plan.events[-1].kind, plan.events[-1].value), ("lamp", ""))
+
+    def test_evening_still_ends_before_midnight_when_bedtime_is_skipped(self):
+        day = date(2026, 3, 28)
+        tz = ZoneInfo("America/Nuuk")
+        plan = build_day(day, tz, self.rooms, sunset_fallback=time(20), bedtime=time(23, 55))
+        self.assertTrue(all(event.at.date() == day for event in plan.events))
+        self.assertLess(plan.events[-1].at.time(), time(23))
+        self.assertEqual((plan.events[-1].kind, plan.events[-1].value), ("lamp", ""))
+
+    def test_fall_clock_fold_orders_both_occurrences_of_the_repeated_hour(self):
+        day = date(2026, 4, 4)
+        tz = ZoneInfo("Pacific/Easter")
+        plan = build_day(day, tz, self.rooms, sunset_fallback=time(21, 30), bedtime=time(22, 30))
+        self.assertEqual(plan.sunset.astimezone(UTC), datetime(2026, 4, 5, 2, 30, tzinfo=UTC))
+        self.assertEqual({event.at.fold for event in plan.events if event.at.hour == 21}, {0, 1})
+        instants = [event.at.astimezone(UTC) for event in plan.events]
+        self.assertEqual(instants, sorted(instants))
+        self.assertEqual(sum(event.kind == "sound" and event.value == "tv" for event in plan.events), 1)
+        self.assertEqual((plan.events[-1].kind, plan.events[-1].value), ("lamp", ""))

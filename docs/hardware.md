@@ -52,9 +52,23 @@ Onboard PWM audio can conflict with the LED driver. If it does, set `dtparam=aud
 
 ## Physical release checklist
 
-- Record the Pi model, Raspberry Pi OS and Python versions, plug models and firmware, strip, and audio output.
-- Give each plug a stable address, check its physical lamp responds to off and on, and verify isolation, auto-off, and power-restore behavior. Use its local controls as a fallback if network or Pi power fails.
-- Run `doctor` before the rehearsal. Check the Pi’s time and time zone, the two plugs, and any optional sound or glow setup.
-- Run `rehearse` in its own state directory, with the scheduled service stopped. Watch the lamps transition one at a time. Confirm the strip looks like reflected TV light. Listen at the door or window and keep the physical speaker volume low.
-- Test a short scheduled trip. Stop the service while a lamp is on and check both plugs, glow, and sound stop. Repeat with a Pi reboot during the test trip. Confirm the service resumes the schedule and shuts everything down at the end.
-- Check a morning report and the final report. Confirm they reflect the test’s acknowledged plug activity. Verify the chosen local notification app has access only to the reports it needs.
+Physical tests are pending. The development environment has no Raspberry Pi, smart plugs, LED strip, or speaker connected. Use this record on the bench before relying on or calling a hardware profile verified.
+
+| Bench record | Current record |
+| --- | --- |
+| Test date and release commit | Pending |
+| Pi model and service profile | Pending |
+| Raspberry Pi OS, kernel, and Python versions | Pending |
+| Both plug models and firmware versions | Pending |
+| LED strip, pixel count, GPIO, and driver version | Pending or not fitted |
+| USB audio output and speaker | Pending or not fitted |
+
+| Check | Current result |
+| --- | --- |
+| Stable plug addresses, network isolation, auto-off, and power-restore off. Verify these independently of the Pi. | Untested |
+| Local `doctor` checks and accurate time and time zone. Check that a cold boot obtains correct time before the routine starts. | Untested |
+| `rehearse` with the scheduled service stopped and a separate state directory. Check physical lamp exclusivity, indirect glow if fitted, and quiet audio at the door or window if fitted. | Untested |
+| Short scheduled trip and early disarm. Check both lamps, glow, and sound turn off and the trip remains disarmed after reboot. | Untested |
+| Pi reboot during an active trip. Check that the service picks up the current schedule, respects the trip cutoff, and shuts the outputs down. | Untested |
+| Network or Pi power loss while a lamp is on. Record actual time to plug-side auto-off and confirm power-restore off. After reconnecting, test `recover` with the original state and verify no outputs activate. | Untested |
+| Morning and end-of-trip reports reflect observed activity and the reader accesses only the intended exports. | Untested |

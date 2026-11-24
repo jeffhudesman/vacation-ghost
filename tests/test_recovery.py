@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from vacation_ghost import __main__ as cli
 from vacation_ghost.config import Hardware, load_config
@@ -75,6 +75,71 @@ class RecoveryTests(unittest.TestCase):
         outputs.set_lamp.assert_called_once_with(kitchen, False)
         self.assertIsNone(controller.room)
 
+    def test_heartbeat_restores_a_restarted_plug_without_overlapping_lamps(self):
+        self.now = self.config.start
+        kitchen, living = self.config.rooms
+        outputs = SimulationOutputs()
+        ticks = 0
+
+        def advance(_seconds):
+            nonlocal ticks
+            ticks += 1
+            if ticks == 1:
+                self.assertTrue(outputs.lamps[kitchen])
+            elif ticks == 2:
+                reads.assert_called_once_with(kitchen)
+                self.assertEqual(writes.call_count, 3)  # Startup OFF, OFF, then kitchen ON.
+                outputs.lamps[kitchen] = False  # The active plug loses power.
+                outputs.lamps[living] = True  # The other relay is on out of band.
+            else:
+                self.assertEqual(writes.call_args_list[-2:], [call(living, False), call(kitchen, True)])
+                status = self.read("latest.json")
+                self.assertTrue(status["active"])
+                self.assertEqual(status["lamp_room"], kitchen)
+                self.assertEqual(status["faults_by_device"], {"plug": 1})
+                self.now = self.config.end
+                return False
+            self.now += timedelta(seconds=15)
+            return False
+
+        self.stop.wait.side_effect = advance
+        with (
+            patch.object(outputs, "set_lamp", wraps=outputs.set_lamp) as writes,
+            patch.object(outputs, "lamp_status", wraps=outputs.lamp_status) as reads,
+            patch("vacation_ghost.engine.monotonic", side_effect=lambda: self.now.timestamp()),
+            patch("vacation_ghost.engine.Routine.desired", return_value=(kitchen, "", None)),
+            self.assertLogs("vacation_ghost.engine", "WARNING"),
+        ):
+            run(self.config, Controller(self.config.rooms, outputs, self.reports), self.stop,
+                reservation=self.reservation)
+        self.assertFalse(any(outputs.lamps.values()))
+        self.assertEqual(self.read("trip.json")["faults_by_device"], {"plug": 1})
+
+    def test_heartbeat_at_trip_end_waits_for_shutdown_result_before_final_report(self):
+        outputs = SimulationOutputs()
+        switch = outputs.set_lamp
+
+        def delayed_switch(room, on):
+            if on:
+                self.now = self.config.end
+            elif outputs.lamps.get(room):
+                raise RuntimeError("relay did not turn off")
+            switch(room, on)
+
+        with (
+            patch.object(outputs, "set_lamp", side_effect=delayed_switch),
+            patch("vacation_ghost.engine.monotonic", return_value=1),
+            patch("vacation_ghost.engine.sleep"),
+            patch("vacation_ghost.engine.Routine.desired", return_value=(self.config.rooms[0], "", None)),
+            self.assertLogs("vacation_ghost.engine", "WARNING"),
+            self.assertRaisesRegex(RuntimeError, "shutdown unconfirmed"),
+        ):
+            run(self.config, Controller(self.config.rooms, outputs, self.reports), self.stop,
+                reservation=self.reservation)
+        self.assertTrue(self.reservation.engaged)
+        self.assertTrue(self.read("latest.json")["shutdown_unconfirmed"])
+        self.assertTrue(self.read("trip.json")["shutdown_unconfirmed"])
+
     def test_unconfirmed_shutdown_recovers_after_restart(self):
         self.now = self.config.end
         self.reservation.engage()
@@ -114,6 +179,25 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual([call.args for call in outputs.set_lamp.call_args_list],
                          [(kitchen, False), (living, False)] * 2)
         self.assertFalse(self.reservation.engaged)
+
+    def test_legacy_marker_still_recovers_if_migration_write_fails(self):
+        self.now = self.config.end
+        legacy = OutputReservation(self.trip)
+        legacy.engage()
+        reservation = OutputReservation(self.trip, self.device)
+        outputs = Mock(spec=SimulationOutputs)
+        with (
+            patch.object(reservation, "engage", side_effect=OSError("migration write failed")),
+            self.assertRaisesRegex(OSError, "migration write failed"),
+        ):
+            run(self.config, Controller(self.config.rooms, outputs, self.reports), self.stop,
+                reservation=reservation)
+        self.assertEqual(outputs.mock_calls, [
+            *(call.set_lamp(room, False) for room in self.config.rooms),
+            call.stop_sound(),
+            call.set_glow((0, 0, 0)),
+        ])
+        self.assertFalse(legacy.engaged)
 
     def test_recover_command_never_activates_outputs_with_corrupt_report(self):
         config = self.live_config()
@@ -230,6 +314,17 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(outputs.lamps, {})
         self.assertTrue(self.read("latest.json")["disarmed"])
         self.assertTrue(self.read("trip.json")["ended_early"])
+
+    def test_disarm_with_unreadable_trip_owner_directs_operator_to_recover(self):
+        (self.trip / ".trip.json").write_text("invalid json", encoding="utf-8")
+        outputs = Mock(spec=SimulationOutputs)
+        with (
+            patch.object(cli.state, "DEVICE_DIR", self.device),
+            patch.object(cli, "_outputs", return_value=outputs),
+            self.assertRaisesRegex(RuntimeError, "Could not record disarm.*use recover"),
+        ):
+            cli._hardware_command("disarm", self.live_config(), self.trip)
+        self.assertEqual(outputs.mock_calls, [call.close()])
 
     def test_rehearsal_continues_lamps_when_audio_fails(self):
         case = self

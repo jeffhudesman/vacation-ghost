@@ -6,10 +6,12 @@ import io
 import ipaddress
 import json
 import logging
+import os
 import re
 import shutil
 import socket
 import ssl
+import stat
 import subprocess
 import sys
 import tempfile
@@ -23,6 +25,9 @@ from urllib.parse import urlsplit
 LOG = logging.getLogger(__name__)
 MAX_VOLUME = 0.20
 MAX_SOUND_SECONDS = 30
+# A 30-second stereo cue at 48 kHz uses under 6 MiB before WAV metadata.
+MAX_SOUND_BYTES = 8 * 1024 * 1024
+SOUND_STOP_TIMEOUT = 1
 SOUND_CUES = ("cabinet", "dishwasher", "footsteps", "kettle", "tv")
 RGB = tuple[int, int, int]
 RPC_TIMEOUT = 2
@@ -45,6 +50,9 @@ class SimulationOutputs:
         if self.lamps.get(room) != on:
             LOG.info("Lamp in %s %s", room, "on" if on else "off")
         self.lamps[room] = on
+
+    def lamp_status(self, room: str) -> bool:
+        return self.lamps.get(room, False)
 
     def set_glow(self, rgb: RGB) -> None:
         if rgb != self.glow:
@@ -178,25 +186,35 @@ def _load_glow_driver():
     return Color, PixelStrip
 
 
+def _open_sound(path: str, flags: int) -> int:
+    return os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK)
+
+
 def _read_sound(path: Path) -> tuple[int, int, bytes]:
     try:
-        with wave.open(str(path), "rb") as source:
-            channels = source.getnchannels()
-            frames = source.getnframes()
-            rate = source.getframerate()
-            if (
-                channels not in {1, 2}
-                or source.getsampwidth() != 2
-                or not 8_000 <= rate <= 48_000
-                or not 0 < frames <= rate * MAX_SOUND_SECONDS
-            ):
-                raise ValueError(
-                    f"{path.name} must be a 16-bit mono/stereo PCM WAV "
-                    "of at most 30 seconds at 8–48 kHz"
-                )
-            data = source.readframes(frames)
-            if len(data) != frames * channels * 2:
-                raise ValueError(f"{path.name} is truncated")
+        with open(path, "rb", opener=_open_sound) as file:
+            info = os.fstat(file.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError(f"{path.name} must be a regular file")
+            if info.st_size > MAX_SOUND_BYTES:
+                raise ValueError(f"{path.name} exceeds the 8 MiB cue size limit")
+            with wave.open(file, "rb") as source:
+                channels = source.getnchannels()
+                frames = source.getnframes()
+                rate = source.getframerate()
+                if (
+                    channels not in {1, 2}
+                    or source.getsampwidth() != 2
+                    or not 8_000 <= rate <= 48_000
+                    or not 0 < frames <= rate * MAX_SOUND_SECONDS
+                ):
+                    raise ValueError(
+                        f"{path.name} must be a 16-bit mono/stereo PCM WAV "
+                        "of at most 30 seconds at 8–48 kHz"
+                    )
+                data = source.readframes(frames)
+                if len(data) != frames * channels * 2:
+                    raise ValueError(f"{path.name} is truncated")
     except (EOFError, wave.Error) as exc:
         raise ValueError(f"{path.name} is not a readable PCM WAV") from exc
     return channels, rate, data
@@ -334,10 +352,13 @@ class PiOutputs:
         if self._player.poll() is None:
             self._player.terminate()
             try:
-                self._player.wait(timeout=1)
+                self._player.wait(timeout=SOUND_STOP_TIMEOUT)
             except subprocess.TimeoutExpired:
                 self._player.kill()
-                self._player.wait()
+                try:
+                    self._player.wait(timeout=SOUND_STOP_TIMEOUT)
+                except subprocess.TimeoutExpired as exc:
+                    raise RuntimeError("aplay did not stop after being killed") from exc
         elif self._player.returncode:
             LOG.warning("aplay exited with status %s", self._player.returncode)
         self._player = None

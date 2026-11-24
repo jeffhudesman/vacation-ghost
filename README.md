@@ -6,7 +6,7 @@ The first version takes manually entered trip dates. It uses no microphone or ca
 
 ## Try it without hardware
 
-Use Python 3.11 or later and run these commands from the checkout. The simulator uses Python’s standard library and your system’s time-zone database.
+On Linux with Python 3.11 or later, run these commands from the checkout. The simulator uses Python’s standard library and your system’s time-zone database.
 
 ```sh
 demo_dir=$(mktemp -d /tmp/vacation-ghost-demo.XXXXXX)
@@ -25,7 +25,7 @@ python3 -m unittest discover -s tests -v
 
 Use a Raspberry Pi and two Shelly Gen2 or Gen3 plugs on the local network. The LED strip and USB sound are optional. See the [parts list, wiring diagram, and physical checklist](docs/hardware.md) and the [systemd installation guide](docs/service.md) for a Pi that should resume after a reboot.
 
-Follow the [service installation guide](docs/service.md) to stage a verified release in a root-owned directory. It includes read-only `doctor` checks, a short physical `rehearse`, and an unprivileged lights-only profile. The checkout quickstart above runs as your own user.
+The service guide covers installing a verified release, checking both plugs with `doctor`, and trying the outputs with `rehearse`. Start with the lights-only Pi example and add glow or sound after the lamp checks pass. [Service guide](docs/service.md) · [Lights-only example](examples/vacation.lights-only.toml)
 
 | Section | Settings |
 | --- | --- |
@@ -44,9 +44,11 @@ The run shuts the outputs off at the scheduled end. It can end early with `disar
 | `daily/YYYY-MM-DD.json` | Note due at 8 AM local time, named for its `delivery_date`. The `night_of` field is the previous evening’s date. |
 | `trip.json` | End-of-trip summary in `message`. |
 
-The hardware reports reflect the plugs’ acknowledgments of the controller’s switch requests. An audio or glow fault is reported in the device status while the lamps can continue running.
+The controller checks the active lamp at each 15-second heartbeat. If the plug has switched off unexpectedly, it records a fault and restores the scene if the schedule still calls for that lamp. An audio or glow fault is reported in the device status while the lamps can continue running.
 
 A local notification app can read the file for the current delivery date, use the stable `id` to send `message` once, and skip reports with `dry_run` set to `true`. It can read `trip.json` the same way. Both reports include a `schema_version` and `trip_id`. Export only the needed reports through a [read-only handoff](docs/service.md#share-reports-locally) and keep the controller’s state directory private.
+
+If an existing published report is malformed, the controller saves a `.corrupt-*` copy and regenerates the report from trip activity using the same ID.
 
 See [Contributing](CONTRIBUTING.md) for the simulator workflow and test commands.
 

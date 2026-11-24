@@ -1,15 +1,18 @@
+import io
 import json
+import os
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
 import wave
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from vacation_ghost.config import load_config
-from vacation_ghost.outputs import PiOutputs, SOUND_CUES
+from vacation_ghost.outputs import MAX_SOUND_BYTES, PiOutputs, SOUND_CUES, SOUND_STOP_TIMEOUT
 
 
 class PiOutputsTest(unittest.TestCase):
@@ -91,6 +94,28 @@ living = "192.168.1.21"
             with self.subTest(origin=origin), self.assertRaises(ValueError):
                 PiOutputs({"kitchen": origin})
         PiOutputs({"kitchen": "192.168.1.20", "living": "https://[fd00::2]:443"})
+
+    def test_rpc_encodes_switch_post_and_confirms_with_get(self):
+        sockets = []
+        for body in (b'{"was_on":false}', b'{"output":true}'):
+            sock = Mock()
+            headers = (
+                f"HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n"
+            ).encode("ascii")
+            sock.makefile.return_value = io.BytesIO(headers + body)
+            sockets.append(sock)
+        with patch("vacation_ghost.outputs.socket.socket", side_effect=sockets):
+            PiOutputs(self.plugs).set_lamp("kitchen", True)
+        set_socket, status_socket = sockets
+        written = b"".join(request.args[0] for request in set_socket.sendall.call_args_list)
+        headers, body = written.split(b"\r\n\r\n", 1)
+        self.assertTrue(headers.startswith(b"POST /rpc/Switch.Set HTTP/1.1\r\n"))
+        self.assertIn(b"Content-Type: application/json", headers)
+        self.assertIn(f"Content-Length: {len(body)}".encode("ascii"), headers)
+        self.assertEqual(json.loads(body), {"id": 0, "on": True})
+        self.assertIn(
+            b"GET /rpc/Switch.GetStatus?id=0 HTTP/1.1", status_socket.sendall.call_args.args[0]
+        )
 
     def test_rpc_deadline_bounds_the_whole_response(self):
         header = b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\nConnection: close\r\n\r\n"
@@ -251,6 +276,31 @@ living = "192.168.1.21"
         start_player.assert_called_once()
         player.wait.assert_not_called()
 
+    def test_sound_rejects_nonregular_symlinked_and_oversized_cues(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            cue = path / "tv.wav"
+            outputs = PiOutputs(self.plugs, sounds_dir=path, volume=0.08)
+            with (
+                patch("vacation_ghost.outputs.shutil.which", return_value="/usr/bin/aplay"),
+                patch("vacation_ghost.outputs.subprocess.Popen") as start_player,
+            ):
+                os.mkfifo(cue)
+                with self.assertRaisesRegex(ValueError, "tv.wav must be a regular file"):
+                    outputs.play_sound("tv")
+                cue.unlink()
+                other_file = path / "other.wav"
+                other_file.touch()
+                cue.symlink_to(other_file)
+                with self.assertRaises(OSError):
+                    outputs.play_sound("tv")
+                cue.unlink()
+                with cue.open("wb") as oversized:
+                    oversized.truncate(MAX_SOUND_BYTES + 1)
+                with self.assertRaisesRegex(ValueError, "exceeds the 8 MiB cue size limit"):
+                    outputs.play_sound("tv")
+        start_player.assert_not_called()
+
     def test_poll_audio_reports_failure_once_without_waiting(self):
         outputs = PiOutputs(self.plugs)
         player = Mock()
@@ -261,3 +311,20 @@ living = "192.168.1.21"
             outputs.poll_audio()
         outputs.poll_audio()
         player.wait.assert_not_called()
+
+    def test_stop_sound_bounds_both_waits_and_can_be_retried(self):
+        outputs = PiOutputs(self.plugs)
+        player = Mock()
+        player.poll.return_value = None
+        timeout = subprocess.TimeoutExpired("aplay", SOUND_STOP_TIMEOUT)
+        player.wait.side_effect = [timeout, timeout, 0]
+        outputs._player = player
+        with self.assertRaisesRegex(RuntimeError, "aplay did not stop after being killed"):
+            outputs.stop_sound()
+        self.assertEqual(
+            player.wait.call_args_list, [call(timeout=SOUND_STOP_TIMEOUT)] * 2
+        )
+        player.terminate.assert_called_once_with()
+        player.kill.assert_called_once_with()
+        outputs.stop_sound()
+        self.assertIsNone(outputs._player)

@@ -95,6 +95,52 @@ class ReportTest(unittest.TestCase):
         self.assertTrue(final["ended_early"])
         self.assertEqual(final["lamp_seconds"], 0)
 
+    def test_corrupt_daily_report_is_preserved_without_blocking_later_reports(self):
+        reports = self.store()
+        broken = self.state / "daily" / "2030-06-11.json"
+        original = b"{\"message\": \xff}"
+        broken.write_bytes(original)
+        with self.assertLogs("vacation_ghost.reports", "WARNING") as warning:
+            reports.publish_due(self.end)
+
+        archives = list(broken.parent.glob(f"{broken.name}.corrupt-*"))
+        self.assertEqual(len(archives), 1)
+        self.assertEqual(archives[0].read_bytes(), original)
+        self.assertIn("Preserved malformed report", warning.output[0])
+        current = self.read("daily/2030-06-11.json")
+        self.assertEqual(current["id"], f"{reports.trip_id}:2030-06-11")
+        self.assertEqual(self.read("daily/2030-06-12.json")["id"], f"{reports.trip_id}:2030-06-12")
+        self.assertEqual(self.read("trip.json")["id"], f"{reports.trip_id}:trip")
+
+        self.store().publish_due(self.end + timedelta(hours=1))
+        self.assertEqual(self.read("daily/2030-06-11.json"), current)
+        self.assertEqual(list(broken.parent.glob(f"{broken.name}.corrupt-*")), archives)
+
+    def test_structurally_invalid_final_report_is_preserved_and_regenerated(self):
+        reports = self.store()
+        invalid = self.state / "trip.json"
+        original = b"[\"not a report\"]\n"
+        invalid.write_bytes(original)
+        with self.assertLogs("vacation_ghost.reports", "WARNING"):
+            reports.publish_due(self.end)
+        archives = list(self.state.glob(f"{invalid.name}.corrupt-*"))
+        self.assertEqual(len(archives), 1)
+        self.assertEqual(archives[0].read_bytes(), original)
+        self.assertEqual(self.read("trip.json")["id"], f"{reports.trip_id}:trip")
+
+    def test_report_path_access_error_is_not_treated_as_corruption(self):
+        reports = self.store()
+        unrelated = self.state / "unrelated.txt"
+        unrelated.write_text("keep this content", encoding="utf-8")
+        report = self.state / "daily" / "2030-06-11.json"
+        report.symlink_to(unrelated)
+
+        with self.assertRaises(OSError):
+            reports.publish_due(self.end)
+        self.assertTrue(report.is_symlink())
+        self.assertEqual(unrelated.read_text(encoding="utf-8"), "keep this content")
+        self.assertEqual(list(report.parent.glob(f"{report.name}.corrupt-*")), [])
+
 
 if __name__ == "__main__":
     unittest.main()

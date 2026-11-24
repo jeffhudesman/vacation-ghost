@@ -23,6 +23,25 @@ class DayPlan:
     events: tuple[Event, ...]
 
 
+def _local_instant(wall_time: datetime, tz: ZoneInfo) -> datetime:
+    """Resolve a local clock reading to UTC, preferring the first occurrence."""
+    first = wall_time.replace(tzinfo=tz, fold=0).astimezone(UTC)
+    if first.astimezone(tz).replace(tzinfo=None) == wall_time:
+        return first
+
+    # Inside a skipped hour, fold=0 and fold=1 map to opposite sides of the
+    # transition. Find the first instant on the far side of the clock jump.
+    before = wall_time.replace(tzinfo=tz, fold=1).astimezone(UTC)
+    after = first
+    while after - before > timedelta(microseconds=1):
+        middle = before + (after - before) // 2
+        if middle.astimezone(tz).replace(tzinfo=None) < wall_time:
+            before = middle
+        else:
+            after = middle
+    return after
+
+
 def _local_sunset(day: date, tz: ZoneInfo, latitude: float, longitude: float) -> datetime | None:
     """Estimate sunset with NOAA's equation of time and solar declination."""
     days = 366 if calendar.isleap(day.year) else 365
@@ -66,7 +85,8 @@ def build_day(
     """Build a repeatable local-day plan with the kitchen followed by the living room.
 
     A lamp event declares the only room that should be lit. An empty value
-    turns all lamps or the TV glow off, according to the event kind.
+    turns all lamps or the TV glow off, according to the event kind. Events
+    are in chronological order, including when the local clock skips or repeats.
     """
     if sunset_fallback.tzinfo is not None or bedtime.tzinfo is not None:
         raise ValueError("Sunset fallback and bedtime must use local clock times")
@@ -84,27 +104,50 @@ def build_day(
         if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
             raise ValueError("Latitude or longitude is out of range")
         sunset = _local_sunset(day, tz, latitude, longitude)
-    if sunset is None:
-        sunset = datetime.combine(day, sunset_fallback, tz)
+    if sunset is None or sunset.date() != day:
+        sunset = _local_instant(datetime.combine(day, sunset_fallback), tz).astimezone(tz)
 
-    morning_start = datetime.combine(day, time(7), tz) + timedelta(minutes=rng.randint(0, 52))
-    morning_events = [
-        Event(morning_start, "lamp", kitchen),
-        Event(morning_start + timedelta(minutes=rng.randint(1, 5)), "sound", "kettle"),
-        Event(morning_start + timedelta(minutes=rng.randint(15, 25)), "lamp", ""),
-    ]
-    if rng.random() < 0.45:
-        morning_events.append(Event(morning_start + timedelta(minutes=rng.randint(7, 11)), "sound", "cabinet"))
-
-    nominal_bedtime = datetime.combine(day, bedtime, tz)
-    night_end = min(
-        nominal_bedtime + timedelta(minutes=rng.randint(-24, 24)),
-        datetime.combine(day, time(23, 55), tz),
+    # Intra-day cue offsets are elapsed time. Applying them on the local
+    # clock can produce imaginary instants or reverse on/off pairs.
+    morning_start = _local_instant(
+        datetime.combine(day, time(7)) + timedelta(minutes=rng.randint(0, 52)), tz
     )
+    morning_events = _morning_events(morning_start, kitchen, rng)
+    morning_cutoff = _local_instant(datetime.combine(day, time(9)), tz)
+    events = morning_events if max(event.at for event in morning_events) < morning_cutoff else []
+
+    latest_bedtime = datetime.combine(day, time(23, 55))
+    bedtime_with_drift = datetime.combine(day, bedtime) + timedelta(minutes=rng.randint(-24, 24))
+    night_end = _local_instant(min(bedtime_with_drift, latest_bedtime), tz)
+    if night_end.astimezone(tz).replace(tzinfo=None) > latest_bedtime:
+        # Bedtime fell in a clock jump that would otherwise carry it past the day's limit.
+        night_end -= timedelta(minutes=5)
+    first_evening = _local_instant(datetime.combine(day, time(15)), tz)
     night_start = min(
-        max(sunset + timedelta(minutes=rng.randint(-14, 16)), datetime.combine(day, time(15), tz)),
+        max(sunset.astimezone(UTC) + timedelta(minutes=rng.randint(-14, 16)), first_evening),
         night_end - timedelta(minutes=75),
     )
+    if night_start >= first_evening:
+        events.extend(_evening_events(night_start, night_end, rooms, rng))
+    events.sort(key=lambda event: event.at)
+    return DayPlan(day, sunset, tuple(Event(event.at.astimezone(tz), event.kind, event.value) for event in events))
+
+
+def _morning_events(start: datetime, kitchen: str, rng: random.Random) -> list[Event]:
+    events = [
+        Event(start, "lamp", kitchen),
+        Event(start + timedelta(minutes=rng.randint(1, 5)), "sound", "kettle"),
+        Event(start + timedelta(minutes=rng.randint(15, 25)), "lamp", ""),
+    ]
+    if rng.random() < 0.45:
+        events.append(Event(start + timedelta(minutes=rng.randint(7, 11)), "sound", "cabinet"))
+    return events
+
+
+def _evening_events(
+    night_start: datetime, night_end: datetime, rooms: tuple[str, str], rng: random.Random
+) -> list[Event]:
+    kitchen, living_room = rooms
     evening_length = night_end - night_start
     first_tv = night_start + evening_length * rng.uniform(0.12, 0.19)
     kitchen_break = night_start + evening_length * rng.uniform(0.56, 0.67)
@@ -126,9 +169,9 @@ def build_day(
         Event(night_end, "lamp", ""),
     ]
     if rng.random() < 0.6:
-        evening_events.append(Event(kitchen_break + timedelta(minutes=2), "sound", rng.choice(("dishwasher", "cabinet"))))
+        cue = rng.choice(("dishwasher", "cabinet"))
+        evening_events.append(Event(kitchen_break + timedelta(minutes=2), "sound", cue))
     if rng.random() < 0.38:
         evening_events.append(Event(night_end - timedelta(minutes=2), "sound", "footsteps"))
 
-    events = sorted((*morning_events, *evening_events), key=lambda event: event.at)
-    return DayPlan(day, sunset, tuple(events))
+    return evening_events

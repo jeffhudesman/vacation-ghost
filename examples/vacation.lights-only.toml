@@ -1,0 +1,19 @@
+# Copy into your private Pi config and replace the fictional dates and addresses.
+# Keep real trip dates, location, and LAN addresses out of the checkout.
+[trip]
+start = 2030-06-10T09:00:00Z
+end = 2030-06-13T13:00:00Z
+timezone = "Etc/UTC"
+
+[routine]
+rooms = ["kitchen", "living"]
+sunset = "19:40"
+bedtime = "23:00"
+
+[hardware]
+led_count = 0
+volume = 0
+
+[hardware.plugs]
+kitchen = "http://192.168.1.20"
+living = "http://192.168.1.21"

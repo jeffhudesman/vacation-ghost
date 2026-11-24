@@ -95,9 +95,15 @@ def _hardware_command(command: str, config: Config, state_dir: Path) -> None:
     is_rehearsal = command == "rehearse"
     disarm_path = state_dir / ".disarm-request.json"
     identity = trip_identity(config.start, config.end)
-    if command == "disarm":
-        _request_disarm(disarm_path, identity, datetime.now(config.timezone))
     try:
+        if command == "disarm":
+            try:
+                _request_disarm(disarm_path, identity, datetime.now(config.timezone))
+            except (OSError, ValueError, RuntimeError, KeyError) as exc:
+                raise RuntimeError(
+                    f"Could not record disarm ({exc}). Stop the runner and use recover with the original "
+                    "configuration and state directory to retry any pending shutdown."
+                ) from exc
         with state.lock_file(state.DEVICE_DIR / "hardware.lock"), state.lock_file(state_dir / ".lock"):
             hardware = config.hardware
             settings = json.dumps([hardware.plugs, hardware.led_count, hardware.led_pin], sort_keys=True)

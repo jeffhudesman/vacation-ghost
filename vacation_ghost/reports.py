@@ -1,14 +1,23 @@
 """Local activity summaries and a restart-safe record of lamp activity."""
 
 import hashlib
+import json
+import logging
+import os
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
+from uuid import uuid4
 
+from .state import _private_opener
 from .state import private_directory as _private_directory
 from .state import read_record as _read_json
+from .state import sync_directory
 from .state import write_record as _write_json
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -69,6 +78,28 @@ def _fault_message(faults: dict) -> str:
     if faults["shutdown_unconfirmed"]:
         message += " Output shutdown could not be confirmed."
     return message
+
+
+def _preserve_malformed_report(path: Path) -> None:
+    backup = path.with_name(f"{path.name}.corrupt-{uuid4().hex}")
+    os.link(path, backup, follow_symlinks=False)
+    sync_directory(path.parent)
+    logger.warning("Preserved malformed report %s in %s and will regenerate it", path, backup)
+
+
+def _published_report_id(path: Path) -> str | None:
+    try:
+        with open(path, encoding="utf-8", opener=_private_opener) as stream:
+            report = json.load(stream)
+    except FileNotFoundError:
+        return None
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        report = None
+
+    if isinstance(report, dict) and isinstance(report.get("id"), str):
+        return report["id"]
+    _preserve_malformed_report(path)
+    return None
 
 
 class ReportStore:
@@ -250,7 +281,7 @@ class ReportStore:
         return max(start, self._start), min(end, self._effective_end)
 
     def _write_report(self, path: Path, report_id: str, published_at: datetime, fields: dict) -> None:
-        if _read_json(path).get("id") == report_id:
+        if _published_report_id(path) == report_id:
             return
         _write_json(path, {
             "schema_version": 1,
