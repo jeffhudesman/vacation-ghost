@@ -3,6 +3,7 @@
 import logging
 import math
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 from random import Random
@@ -35,6 +36,54 @@ class Outputs(Protocol):
 
 def utc(at: datetime) -> datetime:
     return at.astimezone(UTC)
+
+
+def _switch(outputs: Outputs, room: str, on: bool) -> None:
+    try:
+        outputs.set_lamp(room, on)
+    except (RuntimeError, OSError, ValueError) as exc:
+        raise PlugError(f"{room}: {exc}") from exc
+
+
+def _try_peripheral(device: str, action: Callable[[], None]) -> bool:
+    try:
+        action()
+    except Exception as exc:
+        logger.warning("%s: %s", device, exc)
+        return False
+    return True
+
+
+@dataclass
+class _OffResult:
+    rooms_off: set[str]
+    peripheral_faults: list[str]
+    plug_errors: list[str]
+
+    def confirmed(self, glow_pending: bool) -> bool:
+        return not (
+            self.plug_errors or "sound" in self.peripheral_faults
+            or (glow_pending and "glow" in self.peripheral_faults)
+        )
+
+
+def _turn_outputs_off(rooms: tuple[str, str], outputs: Outputs) -> _OffResult:
+    """Attempt every output with no dependency on report storage."""
+    result = _OffResult(set(), [], [])
+    for device, action in (
+        ("sound", outputs.stop_sound),
+        ("glow", lambda: outputs.set_glow((0, 0, 0))),
+    ):
+        if not _try_peripheral(device, action):
+            result.peripheral_faults.append(device)
+    for room in rooms:
+        try:
+            _switch(outputs, room, False)
+        except PlugError as exc:
+            result.plug_errors.append(str(exc))
+        else:
+            result.rooms_off.add(room)
+    return result
 
 
 class Routine:
@@ -90,23 +139,17 @@ class Controller:
         self.next_cut = -math.inf
         self.failed_peripherals: set[str] = set()
 
-    def _switch(self, room: str, on: bool) -> None:
-        try:
-            self.outputs.set_lamp(room, on)
-        except (RuntimeError, OSError, ValueError) as exc:
-            raise PlugError(f"{room}: {exc}") from exc
-
     def lamp(
         self, now: datetime, room: str | None, can_start: Callable[[], bool] | None = None
     ) -> None:
         if self.room == room:
             return
         if self.room is not None:
-            self._switch(self.room, False)
+            _switch(self.outputs, self.room, False)
             self.room = None
             self.reports.lamp_changed(now, None)
         if room is not None and (can_start is None or can_start()):
-            self._switch(room, True)
+            _switch(self.outputs, room, True)
             self.room = room
             self.reports.lamp_changed(now, room)
 
@@ -133,44 +176,27 @@ class Controller:
             self.color = color
         self.scene = scene
 
-    def _try_peripheral(self, device: str, action: Callable[[], None]) -> bool:
-        try:
-            action()
-        except Exception as exc:
-            logger.warning("%s: %s", device, exc)
-            self.failed_peripherals.add(device)
-            return False
-        return True
-
     def peripheral(self, now: datetime, device: str, action: Callable[[], None]) -> None:
-        if device not in self.failed_peripherals and not self._try_peripheral(device, action):
+        if device not in self.failed_peripherals and not _try_peripheral(device, action):
+            self.failed_peripherals.add(device)
+            self.reports.record_device_fault(now, device)
+
+    def record_off(self, now: datetime, result: _OffResult) -> None:
+        self.scene = ""
+        self.color = (0, 0, 0)
+        self.failed_peripherals.update(result.peripheral_faults)
+        if self.room in result.rooms_off:
+            self.room = None
+            self.reports.lamp_changed(now, None)
+        for device in result.peripheral_faults:
             self.reports.record_device_fault(now, device)
 
     def off(self, now: datetime, *, glow_pending: bool = False) -> bool:
-        errors = []
-        sound_off = self._try_peripheral("sound", self.outputs.stop_sound)
-        glow_off = self._try_peripheral("glow", lambda: self.outputs.set_glow((0, 0, 0)))
-        room_off = False
-        for room in self.rooms:
-            try:
-                self._switch(room, False)
-            except PlugError as exc:
-                errors.append(str(exc))
-            else:
-                if room == self.room:
-                    self.room = None
-                    room_off = True
-        self.scene = ""
-        self.color = (0, 0, 0)
-        if room_off:
-            self.reports.lamp_changed(now, None)
-        if not sound_off:
-            self.reports.record_device_fault(now, "sound")
-        if not glow_off:
-            self.reports.record_device_fault(now, "glow")
-        if errors:
-            raise PlugError("; ".join(errors))
-        return sound_off and (glow_off or not glow_pending)
+        result = _turn_outputs_off(self.rooms, self.outputs)
+        self.record_off(now, result)
+        if result.plug_errors:
+            raise PlugError("; ".join(result.plug_errors))
+        return result.confirmed(glow_pending)
 
 
 def simulate(config: Config, outputs: Outputs, reports: ReportStore, through: datetime) -> None:
@@ -201,23 +227,53 @@ def simulate(config: Config, outputs: Outputs, reports: ReportStore, through: da
     reports.publish_due(through)
 
 
+def _retry_outputs_off(
+    rooms: tuple[str, str], outputs: Outputs, *, glow_pending: bool, clock: Callable[[], datetime]
+) -> list[tuple[datetime, _OffResult]]:
+    attempts = []
+    for delay in (*RETRY_DELAYS, None):
+        result = _turn_outputs_off(rooms, outputs)
+        attempts.append((clock(), result))
+        if result.confirmed(glow_pending):
+            break
+        if result.plug_errors:
+            logger.warning("Shutdown: %s", "; ".join(result.plug_errors))
+        if delay is not None:
+            sleep(delay)
+    return attempts
+
+
+def recover_outputs(
+    rooms: tuple[str, str], outputs: Outputs, reservation: OutputReservation
+) -> bool:
+    """Recover a pending shutdown without constructing or updating reports."""
+    if not reservation.engaged:
+        return False
+    attempts = _retry_outputs_off(rooms, outputs, glow_pending=reservation.glow_pending,
+                                  clock=lambda: datetime.now(UTC))
+    if not attempts[-1][1].confirmed(reservation.glow_pending):
+        raise RuntimeError("shutdown unconfirmed; retry with the same configuration and state directory")
+    reservation.clear()
+    return True
+
+
 def _shutdown(
     controller: Controller, reservation: OutputReservation, clock: Callable[[], datetime]
 ) -> None:
+    glow_pending = reservation.glow_pending
+    attempts = _retry_outputs_off(controller.rooms, controller.outputs, glow_pending=glow_pending, clock=clock)
+    confirmed = attempts[-1][1].confirmed(glow_pending)
+    if confirmed:
+        reservation.clear()
     reports = controller.reports
-    for delay in (*RETRY_DELAYS, None):
-        try:
-            if controller.off(clock(), glow_pending=reservation.glow_pending):
-                reservation.clear()
-                reports.confirm_shutdown()
-                return
-        except PlugError as exc:
-            logger.warning("Shutdown: %s", exc)
-        reports.record_device_fault(clock(), "shutdown", shutdown_unconfirmed=True)
-        reports.status(clock(), False, None, force=True)
-        if delay is not None:
-            sleep(delay)
-    raise RuntimeError("shutdown unconfirmed; retry with the same configuration and state directory")
+    for at, result in attempts:
+        controller.record_off(at, result)
+        if not result.confirmed(glow_pending):
+            reports.record_device_fault(at, "shutdown", shutdown_unconfirmed=True)
+    if confirmed:
+        reports.confirm_shutdown()
+    else:
+        raise RuntimeError("shutdown unconfirmed; retry with the same configuration and state directory")
 
 
 def run(

@@ -3,6 +3,7 @@
 import fcntl
 import json
 import os
+import stat
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -24,11 +25,32 @@ def sync_directory(path: Path) -> None:
 
 
 def private_directory(path: Path) -> None:
+    if path.is_symlink():
+        raise ValueError(f"state directory cannot be a symbolic link: {path}")
     if path.is_dir():
         return
     private_directory(path.parent)
     path.mkdir(mode=0o700, exist_ok=True)
     sync_directory(path.parent)
+
+
+def hardware_directory(path: Path) -> None:
+    """Create hardware state beneath trusted directories when running as root."""
+    if os.geteuid() != 0:
+        private_directory(path)
+        return
+    path = path.absolute()
+    if ".." in path.parts:
+        raise ValueError(f"privileged state path cannot contain '..': {path}")
+    for directory in (*reversed(path.parents), path):
+        try:
+            info = directory.lstat()
+        except FileNotFoundError:
+            directory.mkdir(mode=0o700, exist_ok=True)
+            sync_directory(directory.parent)
+            info = directory.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValueError(f"privileged state requires a root-owned directory without group or public writes: {directory}")
 
 
 @contextmanager
@@ -42,12 +64,23 @@ def lock_file(path: Path, *, blocking: bool = False):
 
 
 def _private_opener(path: str, flags: int) -> int:
-    return os.open(path, flags | os.O_NOFOLLOW, 0o600)
+    fd = os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"state file must be a regular file: {path}")
+        if os.geteuid() == 0 and (info.st_uid != 0 or info.st_mode & 0o022):
+            raise ValueError(f"privileged state file must be root-owned without group or public writes: {path}")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
 
 
 def read_record(path: Path) -> dict:
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
+        with open(path, encoding="utf-8", opener=_private_opener) as stream:
+            record = json.load(stream)
     except FileNotFoundError:
         return {}
     if not isinstance(record, dict):

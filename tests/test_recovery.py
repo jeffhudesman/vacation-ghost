@@ -37,9 +37,18 @@ class RecoveryTests(unittest.TestCase):
         clocks = patch("vacation_ghost.engine.datetime")
         self.addCleanup(clocks.stop)
         clocks.start().now.side_effect = lambda _zone: self.now
+        paths = patch.object(cli.state, "hardware_directory", side_effect=cli.state.private_directory)
+        self.addCleanup(paths.stop)
+        paths.start()
 
     def read(self, name):
         return json.loads((self.trip / name).read_text())
+
+    def live_config(self):
+        return replace(self.config, hardware=Hardware(
+            plugs=dict(zip(self.config.rooms, ("192.168.0.10", "192.168.0.11"))),
+            led_count=0, led_pin=18, sounds_dir=None, volume=0,
+        ))
 
     def test_slow_startup_does_not_energize_after_deadline(self):
         outputs = Mock(spec=SimulationOutputs)
@@ -89,6 +98,74 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse(self.read("latest.json")["shutdown_unconfirmed"])
         self.assertTrue(self.read("trip.json")["shutdown_unconfirmed"])
 
+    def test_physical_shutdown_retries_before_writing_faults(self):
+        self.now = self.config.end
+        self.reservation.engage()
+        kitchen, living = self.config.rooms
+        outputs = Mock(spec=SimulationOutputs)
+        outputs.set_lamp.side_effect = [RuntimeError("plug offline"), None, None, None]
+        with (
+            patch("vacation_ghost.engine.sleep"),
+            patch.object(self.reports, "record_device_fault", side_effect=OSError("disk unavailable")),
+            self.assertRaisesRegex(OSError, "disk unavailable"),
+        ):
+            run(self.config, Controller(self.config.rooms, outputs, self.reports), self.stop,
+                reservation=self.reservation)
+        self.assertEqual([call.args for call in outputs.set_lamp.call_args_list],
+                         [(kitchen, False), (living, False)] * 2)
+        self.assertFalse(self.reservation.engaged)
+
+    def test_recover_command_never_activates_outputs_with_corrupt_report(self):
+        config = self.live_config()
+        legacy = OutputReservation(self.trip)
+        legacy.engage()
+        (self.trip / ".activity.json").write_text("invalid json", encoding="utf-8")
+        outputs = Mock(spec=SimulationOutputs)
+        with (
+            patch.object(cli.state, "DEVICE_DIR", self.device),
+            patch.object(cli, "_outputs", return_value=outputs),
+            self.assertLogs(level="WARNING"),
+            redirect_stdout(io.StringIO()) as output,
+        ):
+            cli._hardware_command("recover", config, self.trip)
+        self.assertIn("Shutdown confirmed", output.getvalue())
+        self.assertEqual([call.args for call in outputs.set_lamp.call_args_list],
+                         [(room, False) for room in config.rooms])
+        outputs.set_glow.assert_called_once_with((0, 0, 0))
+        outputs.play_sound.assert_not_called()
+        self.assertFalse(legacy.engaged)
+
+    def test_startup_recovers_pending_outputs_before_surfacing_corrupt_report(self):
+        config = self.live_config()
+        legacy = OutputReservation(self.trip)
+        legacy.engage()
+        (self.trip / ".activity.json").write_text("invalid json", encoding="utf-8")
+        outputs = Mock(spec=SimulationOutputs)
+        with (
+            patch.object(cli.state, "DEVICE_DIR", self.device),
+            patch.object(cli, "_outputs", return_value=outputs),
+            self.assertRaisesRegex(RuntimeError, "Shutdown confirmed. Could not open reports"),
+        ):
+            cli._hardware_command("run", config, self.trip)
+        self.assertEqual([call.args for call in outputs.set_lamp.call_args_list],
+                         [(room, False) for room in config.rooms])
+        outputs.play_sound.assert_not_called()
+        self.assertFalse(legacy.engaged)
+
+    def test_recover_requires_exclusive_hardware_lock_and_pending_shutdown(self):
+        outputs = Mock(spec=SimulationOutputs)
+        with (
+            patch.object(cli.state, "DEVICE_DIR", self.device),
+            patch.object(cli, "_outputs", return_value=outputs),
+            redirect_stdout(io.StringIO()) as output,
+        ):
+            with lock_file(self.device / "hardware.lock"), self.assertRaises(DeviceBusy):
+                cli._hardware_command("recover", self.live_config(), self.trip)
+            cli._hardware_command("recover", self.live_config(), self.trip)
+        self.assertIn("No pending shutdown", output.getvalue())
+        outputs.set_lamp.assert_not_called()
+        outputs.set_glow.assert_not_called()
+
     def test_transient_plug_failure_reconciles_and_resumes(self):
         self.now = self.config.start
         outputs = SimulationOutputs()
@@ -135,10 +212,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_disarm_command_queues_while_device_is_busy_and_survives_restart(self):
         outputs = SimulationOutputs()
-        config = replace(self.config, hardware=Hardware(
-            plugs=dict(zip(self.config.rooms, ("192.168.0.10", "192.168.0.11"))),
-            led_count=0, led_pin=18, sounds_dir=None, volume=0,
-        ))
+        config = self.live_config()
         with (
             patch.object(cli.state, "DEVICE_DIR", self.device),
             patch.object(cli, "_outputs", return_value=outputs),

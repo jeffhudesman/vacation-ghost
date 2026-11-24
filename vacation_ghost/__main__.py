@@ -11,7 +11,7 @@ from threading import Event
 
 from . import state
 from .config import Config, load_config, parse_timestamp
-from .engine import Controller, rehearse, run, simulate
+from .engine import Controller, recover_outputs, rehearse, run, simulate
 from .outputs import PiOutputs, SimulationOutputs
 from .reports import ReportStore, trip_identity
 
@@ -69,10 +69,29 @@ def _stop_event() -> Event:
     return stop
 
 
+def _refresh_recovered_status(config: Config, state_dir: Path) -> None:
+    """Publish confirmed physical shutdown when the existing reports are usable."""
+    try:
+        trip_id = state.read_record(state_dir / ".trip.json").get("trip_id")
+        dry_run = trip_id == trip_identity(config.start, config.end, dry_run=True)
+        if not dry_run and trip_id != trip_identity(config.start, config.end):
+            return
+        reports = ReportStore(state_dir, config.start, config.end, dry_run=dry_run)
+        now = datetime.now(config.timezone)
+        if not dry_run and (request := _disarm_time(state_dir / ".disarm-request.json", trip_id)) is not None:
+            reports.disarm(request)
+        reports.confirm_shutdown()
+        reports.status(now, False, None, force=True)
+        if not dry_run:
+            reports.publish_due(now)
+    except Exception as exc:
+        logging.warning("Outputs are off. Could not refresh the existing reports: %s", exc)
+
+
 def _hardware_command(command: str, config: Config, state_dir: Path) -> None:
     outputs = _outputs(config)
-    state.private_directory(state_dir)
-    state.private_directory(state.DEVICE_DIR)
+    state.hardware_directory(state_dir)
+    state.hardware_directory(state.DEVICE_DIR)
     is_rehearsal = command == "rehearse"
     disarm_path = state_dir / ".disarm-request.json"
     identity = trip_identity(config.start, config.end)
@@ -84,7 +103,23 @@ def _hardware_command(command: str, config: Config, state_dir: Path) -> None:
             settings = json.dumps([hardware.plugs, hardware.led_count, hardware.led_pin], sort_keys=True)
             hardware_id = hashlib.sha256(settings.encode()).hexdigest()
             reservation = state.OutputReservation(state_dir, state.DEVICE_DIR, hardware_id=hardware_id)
-            reports = ReportStore(state_dir, config.start, config.end, dry_run=is_rehearsal)
+            if command == "recover":
+                if recover_outputs(config.rooms, outputs, reservation):
+                    print("Shutdown confirmed.")
+                    _refresh_recovered_status(config, state_dir)
+                else:
+                    print("No pending shutdown for this state directory.")
+                return
+            try:
+                reports = ReportStore(state_dir, config.start, config.end, dry_run=is_rehearsal)
+            except Exception as report_error:
+                if not reservation.engaged:
+                    raise
+                try:
+                    recover_outputs(config.rooms, outputs, reservation)
+                except (OSError, ValueError, RuntimeError) as shutdown_error:
+                    raise RuntimeError(f"Could not open reports: {report_error}. {shutdown_error}") from shutdown_error
+                raise RuntimeError(f"Shutdown confirmed. Could not open reports: {report_error}") from report_error
             controller = Controller(config.rooms, outputs, reports)
             stop = _stop_event()
             if is_rehearsal:
@@ -112,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
         ("run", "control the devices on a Raspberry Pi"),
         ("rehearse", "exercise each enabled output and confirm shutdown"),
         ("disarm", "end this trip early, including across reboot"),
+        ("recover", "retry a pending shutdown without resuming the routine"),
     ):
         command = commands.add_parser(name, help=help_text)
         command.add_argument("--state-dir", required=True, type=Path)

@@ -1,4 +1,3 @@
-import io
 import json
 import struct
 import sys
@@ -53,9 +52,9 @@ living = "192.168.1.21"
         outputs = PiOutputs(self.plugs, led_count=30, volume=0.08)
         with (
             patch.dict(sys.modules, {"rpi_ws281x": None}),
-            patch.object(outputs._http, "open", side_effect=[
-                io.BytesIO(b'{"output":false}'), io.BytesIO(b'{"output":true}')
-            ]) as open_request,
+            patch("vacation_ghost.outputs._rpc_request", side_effect=[
+                b'{"output":false}', b'{"output":true}'
+            ]) as rpc_request,
         ):
             self.assertFalse(outputs.lamp_status("kitchen"))
             self.assertTrue(outputs.lamp_status("living"))
@@ -63,26 +62,132 @@ living = "192.168.1.21"
                 outputs.check_glow()
             with self.assertRaisesRegex(ValueError, "hardware.sounds_dir"):
                 outputs.check_audio()
-        requests = [call.args[0] for call in open_request.call_args_list]
-        self.assertEqual([request.get_method() for request in requests], ["GET", "GET"])
-        self.assertEqual([request.selector for request in requests], ["/rpc/Switch.GetStatus?id=0"] * 2)
+        self.assertEqual(
+            [call.args for call in rpc_request.call_args_list],
+            [
+                ("http://192.168.1.20", "Switch.GetStatus?id=0", None),
+                ("http://192.168.1.21", "Switch.GetStatus?id=0", None),
+            ],
+        )
 
     def test_set_checks_the_output_after_switching(self):
         outputs = PiOutputs(self.plugs)
-        with patch.object(outputs._http, "open", side_effect=[
-            io.BytesIO(b'{"was_on":true}'), io.BytesIO(b'{"output":true}')
-        ]) as open_request:
+        with patch("vacation_ghost.outputs._rpc_request", side_effect=[
+            b'{"was_on":true}', b'{"output":true}'
+        ]) as rpc_request:
             with self.assertRaisesRegex(RuntimeError, "kitchen did not turn off"):
                 outputs.set_lamp("kitchen", False)
-        set_request, status_request = [call.args[0] for call in open_request.call_args_list]
-        self.assertEqual(set_request.get_method(), "POST")
-        self.assertEqual(set_request.selector, "/rpc/Switch.Set")
-        self.assertEqual(json.loads(set_request.data), {"id": 0, "on": False})
-        self.assertEqual(status_request.get_method(), "GET")
-        with patch.object(outputs._http, "open", side_effect=[
-            io.BytesIO(b'{"was_on":true}'), io.BytesIO(b'{"output":false}')
+        set_request, status_request = [call.args for call in rpc_request.call_args_list]
+        self.assertEqual(set_request[:2], ("http://192.168.1.20", "Switch.Set"))
+        self.assertEqual(json.loads(set_request[2]), {"id": 0, "on": False})
+        self.assertEqual(status_request, ("http://192.168.1.20", "Switch.GetStatus?id=0", None))
+        with patch("vacation_ghost.outputs._rpc_request", side_effect=[
+            b'{"was_on":true}', b'{"output":false}'
         ]):
             outputs.set_lamp("kitchen", False)
+
+    def test_plugs_accept_only_direct_lan_origins(self):
+        for origin in ("127.0.0.1", "169.254.0.1", "8.8.8.8", "plug.local", "[fe80::1]"):
+            with self.subTest(origin=origin), self.assertRaises(ValueError):
+                PiOutputs({"kitchen": origin})
+        PiOutputs({"kitchen": "192.168.1.20", "living": "https://[fd00::2]:443"})
+
+    def test_rpc_deadline_bounds_the_whole_response(self):
+        header = b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\nConnection: close\r\n\r\n"
+        body = b'{"output":false}'
+        for name, chunks in (
+            ("complete", [header + body]),
+            ("partial headers", [header[:20], header[20:40], header[40:] + body]),
+            ("partial body", [header, body[:10], body[10:]]),
+        ):
+            with self.subTest(name=name):
+                now = 100.0
+                timeout = None
+                sock = Mock()
+                stream = sock.makefile.return_value
+                wire_chunks = iter(chunks)
+
+                def settimeout(seconds):
+                    nonlocal timeout
+                    timeout = seconds
+
+                def connect(_address):
+                    nonlocal now
+                    now += 0.4
+
+                def sendall(_request):
+                    nonlocal now
+                    now += 0.3
+
+                def readinto(buffer):
+                    nonlocal now
+                    read_seconds = 0.5
+                    if timeout < read_seconds:
+                        now += timeout
+                        raise TimeoutError("timed out")
+                    now += read_seconds
+                    chunk = next(wire_chunks)
+                    buffer[:len(chunk)] = chunk
+                    return len(chunk)
+
+                sock.settimeout.side_effect = settimeout
+                sock.connect.side_effect = connect
+                sock.sendall.side_effect = sendall
+                stream.readinto.side_effect = readinto
+                outputs = PiOutputs(self.plugs)
+                with (
+                    patch("vacation_ghost.outputs.monotonic", side_effect=lambda: now),
+                    patch("vacation_ghost.outputs.socket.socket", return_value=sock) as make_socket,
+                ):
+                    if name == "complete":
+                        self.assertFalse(outputs.lamp_status("kitchen"))
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "timed out"):
+                            outputs.lamp_status("kitchen")
+                        self.assertAlmostEqual(now, 102.0)
+                make_socket.assert_called_once()
+                sock.connect.assert_called_once_with(("192.168.1.20", 80))
+                self.assertIn(b"GET /rpc/Switch.GetStatus?id=0 HTTP/1.1", sock.sendall.call_args.args[0])
+                stream.close.assert_called()
+                sock.close.assert_called()
+
+    def test_https_spends_the_same_budget_and_uses_default_tls_verification(self):
+        response = b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\n" + b'{"output":false}'
+        now = 100.0
+        tcp = Mock()
+        tls = Mock()
+        context = Mock()
+
+        def connect(_address):
+            nonlocal now
+            now += 0.5
+
+        def wrap_socket(sock, *, server_hostname):
+            nonlocal now
+            self.assertIs(sock, tcp)
+            self.assertEqual(server_hostname, "fd00::2")
+            self.assertEqual(tcp.settimeout.call_args.args, (1.5,))
+            now += 0.5
+            return tls
+
+        def readinto(buffer):
+            buffer[:len(response)] = response
+            return len(response)
+
+        tcp.connect.side_effect = connect
+        context.wrap_socket.side_effect = wrap_socket
+        tls.makefile.return_value.readinto.side_effect = readinto
+        outputs = PiOutputs({"kitchen": "https://[fd00::2]:8443"})
+        with (
+            patch("vacation_ghost.outputs.monotonic", side_effect=lambda: now),
+            patch("vacation_ghost.outputs.socket.socket", return_value=tcp),
+            patch("vacation_ghost.outputs.ssl.create_default_context", return_value=context) as make_context,
+        ):
+            self.assertFalse(outputs.lamp_status("kitchen"))
+        make_context.assert_called_once_with()
+        tcp.connect.assert_called_once_with(("fd00::2", 8443))
+        self.assertEqual(tls.settimeout.call_args_list[0].args, (1.0,))
+        self.assertIn(b"Host: [fd00::2]:8443", tls.sendall.call_args.args[0])
 
     def test_diagnostics_inspect_peripherals_without_setting_glow_or_playing_audio(self):
         pixel_strip = Mock()

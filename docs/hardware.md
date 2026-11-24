@@ -7,13 +7,19 @@ Start with two switched lamps. The LED strip adds TV glow, and USB audio adds ho
 | Quantity | Part | Notes |
 | --- | --- | --- |
 | 1 | Raspberry Pi Zero 2 W or Pi 4 | With a compatible regulated Pi power supply, microSD card, and ventilated case. Use current Raspberry Pi OS with Python 3.11 or later. |
-| 2 | Shelly Gen2 or Gen3 plugs | Must support local `Switch.GetStatus` and `Switch.Set` for channel 0. Match your outlet type and the lamp’s load. Reserve a LAN address for each plug in your router. |
+| 2 | Shelly Gen2 or Gen3 plugs | Must support local `Switch.GetStatus` and `Switch.Set` for channel 0. Match your outlet type and the lamp’s load. Reserve an RFC 1918 IPv4 or unique-local IPv6 address for each plug. |
 | 2 | Lamps | Use lamps that light when outlet power returns. Confirm they do so during the rehearsal. |
 | 1 | WS2812B-compatible 5 V RGB strip | Optional. About 30 pixels is a starting point for a reflected glow. GPIO18 is the default data pin. |
 | 1 each | 5 V strip power supply and 3.3 V-to-5 V logic level shifter | For the optional strip. Choose a unidirectional logic buffer rated for the strip’s data rate, such as a 74AHCT125. Provide suitable low-voltage wiring and strain relief. |
 | 1 each | USB audio output and powered speaker | Optional. The Pi Zero 2 W may need a USB OTG adapter or powered hub. A physical volume control makes quiet playback easier to set. |
 
 The Pi, its power supply, and the two plugs are the first purchases for a lights-only build. Reuse the lamps and router you already have. Cost depends on regional plug prices and which parts you have on hand. Configure the plugs for local control and keep their RPC endpoints on the LAN.
+
+## Restrict plug access
+
+The plugs accept unauthenticated local RPC. Put them on a trusted or separate IoT segment and restrict access with a firewall or VLAN ACL so only the Pi and trusted administrators can reach the plugs. Apply the rule to traffic between clients as well as traffic between networks. Avoid port forwarding and UPnP exposure. Disable the vendor cloud on the plugs if you plan to control them only locally. The Pi needs no vendor cloud account to run the routine.
+
+Set each plug to restore power in the off state. Configure its built-in auto-off timer to outlast a normal single lamp session while limiting how long the lamp can stay on if the Pi loses power or network access. Check both options on your exact firmware and confirm they work independently of the Pi. These plug-side safeguards matter even when the Pi reports that it issued an off command.
 
 ## Hardware compatibility
 
@@ -47,7 +53,7 @@ Onboard PWM audio can conflict with the LED driver. If it does, set `dtparam=aud
 ## Physical release checklist
 
 - Record the Pi model, Raspberry Pi OS and Python versions, plug models and firmware, strip, and audio output.
-- Give each plug a stable address, check its physical lamp responds to off and on, and set a suitable auto-off and power-restore behavior. Use its local controls as a fallback if network or Pi power fails.
+- Give each plug a stable address, check its physical lamp responds to off and on, and verify isolation, auto-off, and power-restore behavior. Use its local controls as a fallback if network or Pi power fails.
 - Run `doctor` before the rehearsal. Check the Pi’s time and time zone, the two plugs, and any optional sound or glow setup.
 - Run `rehearse` in its own state directory, with the scheduled service stopped. Watch the lamps transition one at a time. Confirm the strip looks like reflected TV light. Listen at the door or window and keep the physical speaker volume low.
 - Test a short scheduled trip. Stop the service while a lamp is on and check both plugs, glow, and sound stop. Repeat with a Pi reboot during the test trip. Confirm the service resumes the schedule and shuts everything down at the end.

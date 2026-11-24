@@ -2,26 +2,35 @@
 
 from __future__ import annotations
 
+import io
 import ipaddress
 import json
 import logging
 import re
 import shutil
+import socket
+import ssl
 import subprocess
 import sys
 import tempfile
 import wave
 from array import array
-from http.client import HTTPException
+from http.client import HTTPConnection, HTTPException
 from pathlib import Path
+from time import monotonic
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 LOG = logging.getLogger(__name__)
 MAX_VOLUME = 0.20
 MAX_SOUND_SECONDS = 30
 SOUND_CUES = ("cabinet", "dishwasher", "footsteps", "kettle", "tv")
 RGB = tuple[int, int, int]
+RPC_TIMEOUT = 2
+MAX_RPC_BYTES = 1024
+PLUG_NETWORKS = tuple(
+    ipaddress.ip_network(network)
+    for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7")
+)
 
 
 class SimulationOutputs:
@@ -56,11 +65,6 @@ class SimulationOutputs:
         self.stop_sound()
 
 
-class _RejectRedirects(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
 def _switch_origin(value: str) -> str:
     url = urlsplit(value if "://" in value else f"http://{value}")
     try:
@@ -77,9 +81,8 @@ def _switch_origin(value: str) -> str:
         or url.path not in {"", "/"}
         or url.query
         or url.fragment
-        or not address.is_private
-        or address.is_unspecified
-        or address.is_multicast
+        or not any(address in network for network in PLUG_NETWORKS)
+        or getattr(address, "scope_id", None) is not None
         or port == 0
     ):
         raise ValueError("Plug addresses must be private HTTP or HTTPS origins")
@@ -87,6 +90,82 @@ def _switch_origin(value: str) -> str:
     default_port = 443 if url.scheme == "https" else 80
     authority = f"{host}:{port}" if port not in {None, default_port} else host
     return f"{url.scheme}://{authority}"
+
+
+def _remaining(deadline: float) -> float:
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise TimeoutError("RPC deadline exceeded")
+    return remaining
+
+
+class _DeadlineReader(io.RawIOBase):
+    def __init__(self, sock: socket.socket, deadline: float) -> None:
+        self._socket = sock
+        self._deadline = deadline
+        # The socket file stays open while HTTPConnection handles Connection: close.
+        self._stream = sock.makefile("rb", buffering=0)
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int | None:
+        self._socket.settimeout(_remaining(self._deadline))
+        return self._stream.readinto(buffer)
+
+    def close(self) -> None:
+        self._stream.close()
+        super().close()
+
+
+class _DeadlineSocket:
+    def __init__(self, sock: socket.socket, deadline: float) -> None:
+        self._socket = sock
+        self._deadline = deadline
+
+    def sendall(self, data: bytes) -> None:
+        self._socket.settimeout(_remaining(self._deadline))
+        self._socket.sendall(data)
+
+    def makefile(self, mode: str) -> io.BufferedReader:
+        return io.BufferedReader(_DeadlineReader(self._socket, self._deadline))
+
+    def close(self) -> None:
+        self._socket.close()
+
+
+def _rpc_request(origin: str, operation: str, data: bytes | None) -> bytes:
+    deadline = monotonic() + RPC_TIMEOUT
+    url = urlsplit(origin)
+    host = url.hostname
+    tls = url.scheme == "https"
+    port = url.port or (443 if tls else 80)
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    connection = HTTPConnection(url.netloc)
+    sock = socket.socket(family)
+    try:
+        sock.settimeout(_remaining(deadline))
+        sock.connect((host, port))
+        if tls:
+            context = ssl.create_default_context()
+            sock.settimeout(_remaining(deadline))
+            sock = context.wrap_socket(sock, server_hostname=host)
+        connection.sock = _DeadlineSocket(sock, deadline)
+        headers = {"Connection": "close"}
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        connection.request("GET" if data is None else "POST", f"/rpc/{operation}", data, headers)
+        with connection.getresponse() as response:
+            if not 200 <= response.status < 300:
+                raise HTTPException(f"HTTP status {response.status}")
+            body = response.read(MAX_RPC_BYTES + 1)
+            _remaining(deadline)
+            if len(body) > MAX_RPC_BYTES:
+                raise HTTPException("RPC response exceeds the size limit")
+            return body
+    finally:
+        connection.close()
+        sock.close()
 
 
 def _load_glow_driver():
@@ -146,7 +225,6 @@ class PiOutputs:
         self._origins = {room: _switch_origin(value) for room, value in plugs.items()}
         if len(set(self._origins.values())) != len(self._origins):
             raise ValueError("Each room needs its own plug")
-        self._http = build_opener(ProxyHandler({}), _RejectRedirects())
         self._sounds_dir = sounds_dir
         self._volume = volume
         self._player: subprocess.Popen[bytes] | None = None
@@ -156,14 +234,8 @@ class PiOutputs:
         self._strip = None
 
     def _switch_call(self, room: str, operation: str, data: bytes | None = None) -> dict:
-        request = Request(
-            f"{self._origins[room]}/rpc/{operation}",
-            data=data,
-            headers={"Content-Type": "application/json"} if data is not None else {},
-        )
         try:
-            with self._http.open(request, timeout=2) as response:
-                result = json.loads(response.read(1024))
+            result = json.loads(_rpc_request(self._origins[room], operation, data))
         except (OSError, HTTPException, ValueError) as exc:
             raise RuntimeError(f"Shelly {operation} failed for {room}: {exc}") from exc
         if not isinstance(result, dict):

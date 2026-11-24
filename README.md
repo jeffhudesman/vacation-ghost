@@ -25,39 +25,16 @@ python3 -m unittest discover -s tests -v
 
 Use a Raspberry Pi and two Shelly Gen2 or Gen3 plugs on the local network. The LED strip and USB sound are optional. See the [parts list, wiring diagram, and physical checklist](docs/hardware.md) and the [systemd installation guide](docs/service.md) for a Pi that should resume after a reboot.
 
-For a foreground trial, use Python 3.11 or later on Raspberry Pi OS. Install `python3-venv`, the LED driver if using glow, and `alsa-utils` if using sound. Make USB audio the default ALSA output for the account running Vacation Ghost. Use `sudo` when the Pi needs root for PWM/DMA access.
-
-```sh
-python3 -m venv .venv
-device_dir="$HOME/.local/share/vacation-ghost"
-(
-  umask 077
-  install -d -m 700 "$device_dir"
-  cp -n examples/vacation.example.toml "$device_dir/vacation.toml"
-)
-```
-
-For glow, run `.venv/bin/python -m pip install rpi_ws281x`. For sound, run `.venv/bin/python tools/generate_sounds.py "$device_dir/sounds"` to make five original cues. Edit the local TOML before starting the device.
+Follow the [service installation guide](docs/service.md) to stage a verified release in a root-owned directory. It includes read-only `doctor` checks, a short physical `rehearse`, and an unprivileged lights-only profile. The checkout quickstart above runs as your own user.
 
 | Section | Settings |
 | --- | --- |
 | `[trip]` | Set `start` and `end` to ISO 8601 timestamps with UTC offsets. Use an IANA `timezone` such as `Etc/UTC` for the routine and the reports. |
 | `[routine]` | List the kitchen lamp first and the living room lamp second in `rooms`. Set `sunset` from `15:00` to `22:00` and `bedtime` from `18:00` to `23:55` in local time. If you supply `latitude` and `longitude`, the routine calculates sunset and uses `sunset` as a fallback. An optional `seed` controls the repeatable variation from day to day. |
 | `[hardware]` | For glow, set `led_count` and the BCM `led_pin`. For sound, set `sounds_dir` (relative to the config or absolute) and `volume` up to `0.20`, starting low. For lights only, use `led_count = 0` and `volume = 0`. |
-| `[hardware.plugs]` | Map both room names to their plug addresses, for example `http://192.168.1.40` and `http://192.168.1.41`. Use literal private IPs. |
+| `[hardware.plugs]` | Map both room names to their plug addresses, for example `http://192.168.1.40` and `http://192.168.1.41`. Use RFC 1918 IPv4 or unique-local IPv6 literals. |
 
-Run `doctor` to check the configuration and contact both plugs without switching them. While you’re home, run `rehearse` to switch the lamps and try the enabled glow and sound, then shut everything off. Keep the scheduled service stopped while you rehearse. Choose a fresh state directory for each real trip and reuse it when restarting the same trip.
-
-```sh
-sudo "$PWD/.venv/bin/python" -m vacation_ghost --config "$device_dir/vacation.toml" doctor
-rehearsal_dir=$(sudo mktemp -d "$device_dir/rehearsal.XXXXXX")
-sudo "$PWD/.venv/bin/python" -m vacation_ghost \
-  --config "$device_dir/vacation.toml" rehearse --state-dir "$rehearsal_dir"
-sudo "$PWD/.venv/bin/python" -m vacation_ghost \
-  --config "$device_dir/vacation.toml" run --state-dir "$device_dir/trips/my-trip"
-```
-
-The run shuts the outputs off at the scheduled end. To end it early, run `disarm` with the same config and state directory. Wait for the runner to finish and check `latest.json` for `shutdown_unconfirmed` before reusing the devices. The [service guide](docs/service.md#stop-or-change-trips) covers retrying shutdown and preparing a new trip.
+The run shuts the outputs off at the scheduled end. It can end early with `disarm`. Use `recover` for an unconfirmed shutdown. It only tries to turn devices off. Keep the original plug settings and state directory until shutdown is confirmed. [Service operator guide](docs/service.md#stop-recover-or-change-trips)
 
 ## Read reports locally
 
@@ -69,7 +46,7 @@ The run shuts the outputs off at the scheduled end. To end it early, run `disarm
 
 The hardware reports reflect the plugs’ acknowledgments of the controller’s switch requests. An audio or glow fault is reported in the device status while the lamps can continue running.
 
-A local notification app can read the file for the current delivery date, use the stable `id` to send `message` once, and skip reports with `dry_run` set to `true`. It can read `trip.json` the same way. Both reports include a `schema_version` and `trip_id`. Report files are private to the runner’s account by default. If the runner uses `sudo`, configure explicit local read access for the notification app.
+A local notification app can read the file for the current delivery date, use the stable `id` to send `message` once, and skip reports with `dry_run` set to `true`. It can read `trip.json` the same way. Both reports include a `schema_version` and `trip_id`. Export only the needed reports through a [read-only handoff](docs/service.md#share-reports-locally) and keep the controller’s state directory private.
 
 See [Contributing](CONTRIBUTING.md) for the simulator workflow and test commands.
 
