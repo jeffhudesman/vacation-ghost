@@ -87,18 +87,17 @@ def _preserve_malformed_report(path: Path) -> None:
     logger.warning("Preserved malformed report %s in %s and will regenerate it", path, backup)
 
 
-def _published_report_id(path: Path) -> str | None:
+def _read_published_report(path: Path) -> dict | None:
     try:
         with open(path, encoding="utf-8", opener=_private_opener) as stream:
             report = json.load(stream)
     except FileNotFoundError:
-        return None
+        return {}
     except (json.JSONDecodeError, UnicodeDecodeError):
         report = None
 
     if isinstance(report, dict) and isinstance(report.get("id"), str):
-        return report["id"]
-    _preserve_malformed_report(path)
+        return report
     return None
 
 
@@ -127,15 +126,18 @@ class ReportStore:
         self._daily = self.state_dir / "daily"
         _private_directory(self._daily)
         self._journal = self.state_dir / ".activity.json"
+        self._completion = self.state_dir / ".completion.json"
         self._open: _LampRun | None = None
         self._intervals: list[tuple[datetime, datetime]] = []
         self._faults: list[_DeviceFault] = []
         self._shutdown_unconfirmed = False
         self._disarmed_at: datetime | None = None
-        self._last_status: tuple[bool, str | None, bool, int, bool] | None = None
+        self._completed_at: datetime | None = None
+        self._last_status: tuple[bool, str | None, bool, bool, int, bool] | None = None
         self._next_night = trip_start.date()
         self._trip_published = False
         self._restore_journal()
+        self._restore_completion()
 
     def _save_journal(self) -> None:
         open_run = None
@@ -183,13 +185,58 @@ class ReportStore:
         return self._disarmed_at
 
     @property
+    def completed_at(self) -> datetime | None:
+        return self._completed_at
+
+    def _restore_completion(self) -> None:
+        if self._dry_run:
+            return
+        marker = _read_json(self._completion)
+        if marker or self._completion.exists():
+            try:
+                completed_at = _utc(datetime.fromisoformat(marker["completed_at"]))
+                if marker.get("trip_id") != self.trip_id or completed_at < self._end:
+                    raise ValueError("completion does not match the scheduled end of this trip")
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"invalid trip completion record at {self._completion}") from exc
+            self._completed_at = completed_at
+            return
+        if self.disarmed_at is not None:
+            return
+
+        # Older versions recorded completed runs only in the final report.
+        prior = _read_published_report(self.state_dir / "trip.json")
+        if not prior or (
+            prior.get("id") != f"{self.trip_id}:trip" or prior.get("trip_id") != self.trip_id
+            or prior.get("schema_version") != 1 or prior.get("dry_run") is not False
+            or not isinstance(prior.get("message"), str)
+        ):
+            return
+        try:
+            published_at = _utc(datetime.fromisoformat(prior["published_at"]))
+        except (KeyError, TypeError, ValueError):
+            return
+        if prior.get("ended_early") is True and published_at < self._end:
+            self.disarm(published_at)
+        else:
+            self.complete(published_at)
+
+    def complete(self, at: datetime) -> datetime | None:
+        """Record the first observation of the planned trip end before switching off."""
+        instant = _utc(at)
+        if self.completed_at is None and self.disarmed_at is None and instant >= self._end:
+            _write_json(self._completion, {"trip_id": self.trip_id, "completed_at": instant.isoformat()})
+            self._completed_at = instant
+        return self.completed_at
+
+    @property
     def _effective_end(self) -> datetime:
         return self.disarmed_at or self._end
 
     def disarm(self, at: datetime) -> datetime | None:
         """Persist the first early end time and return it for future restarts."""
         instant = _utc(at)
-        if self.disarmed_at is None and instant < self._end:
+        if self.disarmed_at is None and self.completed_at is None and instant < self._end:
             self._disarmed_at = instant
             self._save_journal()
         return self.disarmed_at
@@ -222,10 +269,13 @@ class ReportStore:
                 self._open.observed_through = observed_through
                 self._save_journal()
         disarmed = self.disarmed_at is not None
-        state = active, room, disarmed, len(self._faults), self._shutdown_unconfirmed
+        completed = self.completed_at is not None
+        state = active, room, disarmed, completed, len(self._faults), self._shutdown_unconfirmed
         if force or self._last_status != state:
             if disarmed:
                 message = "Vacation Ghost is disarmed."
+            elif completed:
+                message = "Vacation Ghost finished the trip."
             else:
                 message = "Vacation Ghost is active." if active else "Vacation Ghost is idle."
             faults = _fault_summary(self._faults, self._shutdown_unconfirmed)
@@ -237,6 +287,7 @@ class ReportStore:
                 "lamp_room": room,
                 "dry_run": self._dry_run,
                 "disarmed": disarmed,
+                "completed": completed,
                 **faults,
                 "message": self._prefix + message + _fault_message(faults),
             })
@@ -281,7 +332,10 @@ class ReportStore:
         return max(start, self._start), min(end, self._effective_end)
 
     def _write_report(self, path: Path, report_id: str, published_at: datetime, fields: dict) -> None:
-        if _published_report_id(path) == report_id:
+        existing = _read_published_report(path)
+        if existing is None:
+            _preserve_malformed_report(path)
+        elif existing.get("id") == report_id:
             return
         _write_json(path, {
             "schema_version": 1,
@@ -351,6 +405,9 @@ class ReportStore:
     def publish_due(self, now: datetime) -> None:
         """Publish each elapsed 8 AM summary and the final summary once per trip."""
         now = _utc(now)
+        recorded_end = self.disarmed_at or self.completed_at
+        if recorded_end is not None:
+            now = max(now, recorded_end)
         daily_cutoff = min(now, self._effective_end)
         while self._next_night < daily_cutoff.astimezone(self._zone).date():
             morning = self._next_night + timedelta(days=1)

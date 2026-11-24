@@ -286,7 +286,10 @@ def _shutdown(
     if confirmed:
         reservation.clear()
     reports = controller.reports
+    recorded_end = reports.disarmed_at or reports.completed_at
     for at, result in attempts:
+        if recorded_end is not None:
+            at = max(utc(at), recorded_end)
         controller.record_off(at, result)
         if not result.confirmed(glow_pending):
             reports.record_device_fault(at, "shutdown", shutdown_unconfirmed=True)
@@ -310,13 +313,18 @@ def run(
     def clock() -> datetime:
         return datetime.now(config.timezone)
 
+    def trip_finished(at: datetime) -> bool:
+        if reports.completed_at is not None or reports.disarmed_at is not None:
+            return True
+        if (request := disarm_requested() if disarm_requested else None) is not None:
+            reports.disarm(request)
+        return reports.disarmed_at is not None or reports.complete(at) is not None
+
     def can_start() -> bool:
-        return (
-            not stop.is_set()
-            and reports.disarmed_at is None
-            and (disarm_requested is None or disarm_requested() is None)
-            and routine.active(clock())
-        )
+        if stop.is_set() or trip_finished(clock()):
+            return False
+        at = clock()
+        return reports.complete(at) is None and not stop.is_set() and routine.active(at)
 
     reservation = reservation or OutputReservation(reports.state_dir)
     previous = clock()
@@ -324,13 +332,13 @@ def run(
     initialized = False
     plug_failures = 0
     try:
+        if trip_finished(previous):
+            return
         if reservation.engaged and not reservation.path.exists():
             reservation.engage()
         while not stop.is_set():
             now = clock()
-            if (request := disarm_requested() if disarm_requested else None) is not None:
-                reports.disarm(request)
-            if reports.disarmed_at is not None or utc(now) >= routine.end:
+            if trip_finished(now):
                 break
 
             tick = monotonic()
@@ -339,8 +347,11 @@ def run(
                 if routine.active(now):
                     if not initialized:
                         reservation.engage()
+                        reset_at = clock()
+                        if trip_finished(reset_at):
+                            break
                         controller.failed_peripherals.clear()
-                        if controller.off(clock(), glow_pending=reservation.glow_pending):
+                        if controller.off(reset_at, glow_pending=reservation.glow_pending):
                             reports.confirm_shutdown()
                         else:
                             reports.record_device_fault(clock(), "shutdown", shutdown_unconfirmed=True)
@@ -367,8 +378,12 @@ def run(
                 plug_failures = 0
             except PlugError as exc:
                 logger.warning("Plug fault: %s", exc)
-                reports.record_device_fault(clock(), "plug", shutdown_unconfirmed=True)
-                reports.status(clock(), False, None, force=True)
+                fault_at = clock()
+                ended = trip_finished(fault_at)
+                reports.record_device_fault(fault_at, "plug", shutdown_unconfirmed=True)
+                reports.status(fault_at, False, None, force=True)
+                if ended:
+                    break
                 initialized = False
                 if plug_failures >= len(RETRY_DELAYS):
                     raise
@@ -378,7 +393,7 @@ def run(
                 continue
 
             report_at = clock()
-            if utc(report_at) >= routine.end:
+            if trip_finished(report_at):
                 break
             reports.status(report_at, initialized, controller.room, force=heartbeat)
             if heartbeat:
@@ -388,8 +403,7 @@ def run(
             stop.wait(0.15 if initialized else 1)
     finally:
         try:
-            if (request := disarm_requested() if disarm_requested else None) is not None:
-                reports.disarm(request)
+            trip_finished(clock())
         finally:
             _finish(controller, reservation, clock)
 

@@ -181,7 +181,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse(self.reservation.engaged)
 
     def test_legacy_marker_still_recovers_if_migration_write_fails(self):
-        self.now = self.config.end
+        self.now = self.config.start
         legacy = OutputReservation(self.trip)
         legacy.engage()
         reservation = OutputReservation(self.trip, self.device)
@@ -198,6 +198,98 @@ class RecoveryTests(unittest.TestCase):
             call.set_glow((0, 0, 0)),
         ])
         self.assertFalse(legacy.engaged)
+
+    def test_completion_is_durable_before_off_and_reports_survive_clock_rollback(self):
+        self.now = self.config.end
+        self.reservation.engage()
+        outputs = Mock(spec=SimulationOutputs)
+
+        def roll_back_on_first_off(_room, on):
+            self.assertFalse(on)
+            self.assertEqual(self.read(".completion.json")["completed_at"], self.config.end.isoformat())
+            self.now = self.config.start
+
+        outputs.set_lamp.side_effect = roll_back_on_first_off
+        run(self.config, Controller(self.config.rooms, outputs, self.reports), self.stop,
+            reservation=self.reservation)
+        self.assertEqual(outputs.set_lamp.call_args_list, [call(room, False) for room in self.config.rooms])
+        self.assertFalse(self.reservation.engaged)
+        self.assertTrue(self.read("latest.json")["completed"])
+        self.assertEqual(self.read("trip.json")["published_at"], self.config.end.isoformat())
+
+    def test_plug_fault_at_deadline_still_persists_completion_before_off(self):
+        self.now = self.config.start
+        outputs = Mock(spec=SimulationOutputs)
+
+        def fail_on_at_deadline(_room, on):
+            if on:
+                self.now = self.config.end
+                raise RuntimeError("lost relay acknowledgement")
+            if self.now == self.config.end:
+                self.assertEqual(self.read(".completion.json")["completed_at"], self.config.end.isoformat())
+                self.now = self.config.start
+
+        outputs.set_lamp.side_effect = fail_on_at_deadline
+        with (
+            patch("vacation_ghost.engine.Routine.desired", return_value=(self.config.rooms[0], "", None)),
+            self.assertLogs("vacation_ghost.engine", "WARNING"),
+        ):
+            run(self.config, Controller(self.config.rooms, outputs, self.reports), self.stop,
+                reservation=self.reservation)
+        self.stop.wait.assert_not_called()
+        self.assertFalse(self.reservation.engaged)
+        self.assertEqual(self.read("trip.json")["faults_by_device"], {"plug": 1})
+        self.assertFalse(self.read("trip.json")["shutdown_unconfirmed"])
+
+    def test_stale_restart_recovers_pending_off_and_publishes_without_reactivation(self):
+        self.reservation.engage()
+        self.reports.complete(self.config.end)
+        self.now = self.config.start
+        restarted = ReportStore(self.trip, self.config.start, self.config.end)
+        self.assertEqual(restarted.completed_at, self.config.end)
+        self.assertFalse((self.trip / "trip.json").exists())
+        outputs = Mock(spec=SimulationOutputs)
+        run(self.config, Controller(self.config.rooms, outputs, restarted), self.stop,
+            reservation=OutputReservation(self.trip, self.device))
+        self.assertEqual(outputs.set_lamp.call_args_list, [call(room, False) for room in self.config.rooms])
+        self.assertFalse(self.reservation.engaged)
+        self.assertFalse(self.read("latest.json")["active"])
+        self.assertEqual(self.read("trip.json")["published_at"], self.config.end.isoformat())
+
+        outputs.reset_mock()
+        run(self.config, Controller(self.config.rooms, outputs, restarted), self.stop,
+            reservation=OutputReservation(self.trip, self.device), disarm_requested=lambda: self.config.start)
+        self.assertEqual(outputs.mock_calls, [])
+        self.assertFalse(self.read("latest.json")["disarmed"])
+
+    def test_stale_restart_recognizes_existing_pre_upgrade_final_summary(self):
+        self.reports.publish_due(self.config.end)
+        existing = self.read("trip.json")
+        self.assertFalse((self.trip / ".completion.json").exists())
+        self.now = self.config.start
+        restarted = ReportStore(self.trip, self.config.start, self.config.end)
+        outputs = Mock(spec=SimulationOutputs)
+        run(self.config, Controller(self.config.rooms, outputs, restarted), self.stop,
+            reservation=self.reservation)
+        self.assertEqual(outputs.mock_calls, [])
+        self.assertEqual(self.read(".completion.json")["completed_at"], self.config.end.isoformat())
+        self.assertEqual(self.read("trip.json"), existing)
+
+    def test_malformed_completion_marker_fails_closed_and_still_recovers_pending_outputs(self):
+        legacy = OutputReservation(self.trip)
+        legacy.engage()
+        marker = self.trip / ".completion.json"
+        marker.write_text("{}", encoding="utf-8")
+        outputs = Mock(spec=SimulationOutputs)
+        with (
+            patch.object(cli.state, "DEVICE_DIR", self.device),
+            patch.object(cli, "_outputs", return_value=outputs),
+            self.assertRaisesRegex(RuntimeError, "Shutdown confirmed.*invalid trip completion record"),
+        ):
+            cli._hardware_command("run", self.live_config(), self.trip)
+        self.assertEqual(outputs.set_lamp.call_args_list, [call(room, False) for room in self.config.rooms])
+        self.assertFalse(legacy.engaged)
+        self.assertEqual(marker.read_text(encoding="utf-8"), "{}")
 
     def test_recover_command_never_activates_outputs_with_corrupt_report(self):
         config = self.live_config()

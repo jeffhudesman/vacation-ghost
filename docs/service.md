@@ -95,62 +95,80 @@ sudo /opt/vacation-ghost/.venv/bin/python -I /opt/vacation-ghost/tools/generate_
 For two-plug installations with both optional outputs disabled, install the drop-in that runs the service as a dedicated account without capabilities or direct device access. Use the same account for manual hardware commands. The commands below assume a fresh deployment. [Upgrade and profile changes](#upgrade-or-switch-profiles)
 
 ```sh
-if ! id vacation-ghost >/dev/null 2>&1; then
-  sudo useradd --system --user-group --home-dir /var/lib/vacation-ghost \
-    --shell /usr/sbin/nologin vacation-ghost
-fi
-sudo chown root:vacation-ghost /etc/vacation-ghost /etc/vacation-ghost/vacation.toml
-sudo chmod 0750 /etc/vacation-ghost
-sudo chmod 0640 /etc/vacation-ghost/vacation.toml
-sudo install -d -o vacation-ghost -g vacation-ghost -m 0700 /var/lib/vacation-ghost
-sudo install -d -o root -g root -m 0755 /etc/systemd/system/vacation-ghost.service.d
-sudo install -o root -g root -m 0644 /opt/vacation-ghost/deploy/lights-only.conf \
-  /etc/systemd/system/vacation-ghost.service.d/lights-only.conf
+(
+  set -eu
+  cd /opt/vacation-ghost
+  if ! id vacation-ghost >/dev/null 2>&1; then
+    sudo useradd --system --user-group --home-dir /var/lib/vacation-ghost \
+      --shell /usr/sbin/nologin vacation-ghost
+  fi
+  sudo chown root:vacation-ghost /etc/vacation-ghost /etc/vacation-ghost/vacation.toml
+  sudo chmod 0750 /etc/vacation-ghost
+  sudo chmod 0640 /etc/vacation-ghost/vacation.toml
+  sudo install -d -o vacation-ghost -g vacation-ghost -m 0700 /var/lib/vacation-ghost
+  sudo -u vacation-ghost -g vacation-ghost test -r /etc/vacation-ghost/vacation.toml
+  sudo -u vacation-ghost -g vacation-ghost test -w /var/lib/vacation-ghost
+  sudo install -d -o root -g root -m 0755 /etc/systemd/system/vacation-ghost.service.d
+  sudo install -o root -g root -m 0644 /opt/vacation-ghost/deploy/lights-only.conf \
+    /etc/systemd/system/vacation-ghost.service.d/lights-only.conf
+)
 ```
 
 ## Check and start
 
-Run the checks from the root-owned install. Set `service_user=vacation-ghost` in the command if you installed the lights-only profile. `doctor` checks each plug through read-only `Switch.GetStatus`. `rehearse` ignores trip dates and briefly drives the connected outputs. Run it when you are home, with the scheduled service stopped and using separate state.
+Run the checks from the root-owned install. These commands use the lights-only `vacation-ghost` account. If you set up the base service for optional hardware, set `service_user=root` in the check, start, disarm, and recovery commands. `doctor` checks each plug through read-only `Switch.GetStatus`. `rehearse` ignores trip dates and briefly drives the connected outputs. Run it when you are home, with the scheduled service stopped and using separate state.
 
 ```sh
 (
   set -eu
-  service_user=root
+  service_user=vacation-ghost
   cd /opt/vacation-ghost
-  sudo -u "$service_user" /opt/vacation-ghost/.venv/bin/python -m vacation_ghost \
+  sudo -u "$service_user" -g "$service_user" /opt/vacation-ghost/.venv/bin/python -m vacation_ghost \
     --config /etc/vacation-ghost/vacation.toml doctor
-  rehearsal_dir=$(sudo -u "$service_user" mktemp -d /var/lib/vacation-ghost/rehearsal.XXXXXX)
+  rehearsal_dir=$(sudo -u "$service_user" -g "$service_user" mktemp -d /var/lib/vacation-ghost/rehearsal.XXXXXX)
   printf 'Rehearsal state is in %s\n' "$rehearsal_dir"
-  sudo -u "$service_user" /opt/vacation-ghost/.venv/bin/python -m vacation_ghost \
+  sudo -u "$service_user" -g "$service_user" /opt/vacation-ghost/.venv/bin/python -m vacation_ghost \
     --config /etc/vacation-ghost/vacation.toml rehearse --state-dir "$rehearsal_dir"
 )
 ```
 
-Install the unit from the verified release. Enable it only after rehearsal succeeds.
-
-```sh
-sudo install -o root -g root -m 0644 /opt/vacation-ghost/deploy/vacation-ghost.service /etc/systemd/system/vacation-ghost.service
-sudo systemd-analyze verify /etc/systemd/system/vacation-ghost.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now vacation-ghost.service
-sudo systemctl status vacation-ghost.service
-sudo journalctl -u vacation-ghost.service -n 40
-```
-
-The unit uses `/var/lib/vacation-ghost/current` for the active trip and `/var/lib/vacation-ghost/device` for its device reservation. Preserve both across restarts. The service can wait for a future trip start and exits after a successful trip. Check `current/latest.json` for `updated_at`, `shutdown_unconfirmed`, and device faults. Configure the plugs' own auto-off timers and power-restore behavior as described in the [hardware guide](hardware.md#restrict-plug-access).
-
-## Stop, recover, or change trips
-
-Use `disarm` with the same config and trip state directory to end a trip early, including while the service runs. The disarm request persists across reboot. If the request queues, wait for the runner to finish and check `/var/lib/vacation-ghost/current/latest.json` to confirm shutdown. Keep the original plug settings and state directory until off is confirmed. Set `service_user=vacation-ghost` in these commands if using the lights-only profile.
+Install the unit from the verified release after rehearsal succeeds. The commands verify the unit and check that systemd will use the selected account. They start the service and check its status before enabling it at boot.
 
 ```sh
 (
   set -eu
-  service_user=root
+  service_user=vacation-ghost
   cd /opt/vacation-ghost
-  sudo -u "$service_user" /opt/vacation-ghost/.venv/bin/python -m vacation_ghost \
+  sudo install -o root -g root -m 0644 /opt/vacation-ghost/deploy/vacation-ghost.service /etc/systemd/system/vacation-ghost.service
+  sudo systemd-analyze verify /etc/systemd/system/vacation-ghost.service
+  sudo systemctl daemon-reload
+  unit_user=$(sudo systemctl show --property=User --value vacation-ghost.service)
+  if [ "${unit_user:-root}" != "$service_user" ]; then
+    printf 'Expected service account %s, found %s. Check the installed profile.\n' \
+      "$service_user" "${unit_user:-root}" >&2
+    exit 1
+  fi
+  sudo systemctl start vacation-ghost.service
+  sudo journalctl -u vacation-ghost.service -n 40
+  sudo systemctl status --no-pager vacation-ghost.service
+  sudo systemctl enable vacation-ghost.service
+)
+```
+
+The unit uses `/var/lib/vacation-ghost/current` for the active trip and `/var/lib/vacation-ghost/device` for its device reservation. Preserve both across restarts. The service can wait for a future trip start and exits after a successful trip. A completed trip stays disarmed after reboot even if the clock rolls back, and the controller retries any pending switch-off. Check `current/latest.json` for `updated_at`, `shutdown_unconfirmed`, and device faults. Configure the plugs' own auto-off timers and power-restore behavior as described in the [hardware guide](hardware.md#restrict-plug-access).
+
+## Stop, recover, or change trips
+
+Use `disarm` with the same config and trip state directory to end a trip early, including while the service runs. The disarm request persists across reboot. If the request queues, wait for the runner to finish and check `/var/lib/vacation-ghost/current/latest.json` to confirm shutdown. Keep the original plug settings and state directory until off is confirmed. Set `service_user=root` for the base service with optional hardware.
+
+```sh
+(
+  set -eu
+  service_user=vacation-ghost
+  cd /opt/vacation-ghost
+  sudo -u "$service_user" -g "$service_user" /opt/vacation-ghost/.venv/bin/python -m vacation_ghost \
     --config /etc/vacation-ghost/vacation.toml disarm --state-dir /var/lib/vacation-ghost/current
-  sudo cat /var/lib/vacation-ghost/current/latest.json
+  sudo -u "$service_user" -g "$service_user" cat /var/lib/vacation-ghost/current/latest.json
 )
 ```
 
@@ -159,9 +177,9 @@ If shutdown is unconfirmed, stop an installed scheduled service with `sudo syste
 ```sh
 (
   set -eu
-  service_user=root
+  service_user=vacation-ghost
   cd /opt/vacation-ghost
-  sudo -u "$service_user" /opt/vacation-ghost/.venv/bin/python -m vacation_ghost \
+  sudo -u "$service_user" -g "$service_user" /opt/vacation-ghost/.venv/bin/python -m vacation_ghost \
     --config /etc/vacation-ghost/vacation.toml recover --state-dir /var/lib/vacation-ghost/current
 )
 ```
