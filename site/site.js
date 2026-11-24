@@ -22,7 +22,7 @@ for (const button of sceneButtons) {
     }
   });
 }
-document.querySelector(".routine-steps").hidden = false;
+document.querySelector(".routine-interactions")?.removeAttribute("hidden");
 
 const setupTabs = document.querySelector(".setup-tabs");
 const tabs = [...setupTabs.querySelectorAll("[role=tab]")];
@@ -37,12 +37,27 @@ function selectTab(selected) {
   }
 }
 
+function activateTab(selected) {
+  selectTab(selected);
+  const hash = `#${selected.getAttribute("aria-controls")}`;
+  if (window.location.hash !== hash) {
+    window.history.pushState(null, "", hash);
+  }
+}
+
+function selectTabFromHash() {
+  const index = panels.findIndex((panel) => `#${panel.id}` === window.location.hash);
+  if (index === -1) return;
+  selectTab(tabs[index]);
+  panels[index].scrollIntoView();
+}
+
 for (const [index, tab] of tabs.entries()) {
   const panel = panels[index];
   panel.setAttribute("role", "tabpanel");
   panel.setAttribute("aria-labelledby", tab.id);
   panel.tabIndex = 0;
-  tab.addEventListener("click", () => selectTab(tab));
+  tab.addEventListener("click", () => activateTab(tab));
   tab.addEventListener("keydown", (event) => {
     const targets = {
       ArrowLeft: (index + tabs.length - 1) % tabs.length,
@@ -53,12 +68,14 @@ for (const [index, tab] of tabs.entries()) {
     if (!Object.hasOwn(targets, event.key)) return;
     event.preventDefault();
     const selected = tabs[targets[event.key]];
-    selectTab(selected);
-    selected.focus();
+    activateTab(selected);
+    selected.focus({ preventScroll: true });
   });
 }
-selectTab(tabs[0]);
 setupTabs.hidden = false;
+selectTab(tabs[0]);
+selectTabFromHash();
+window.addEventListener("hashchange", selectTabFromHash);
 
 const feedback = document.getElementById("copy-feedback");
 for (const button of document.querySelectorAll("[data-copy]")) {

@@ -8,6 +8,9 @@ permissions:
   contents: read
 
 jobs:
+  site:
+    uses: ./.github/workflows/site.yml
+
   test:
     runs-on: ubuntu-latest
     strategy:

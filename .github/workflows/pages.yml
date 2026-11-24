@@ -1,8 +1,6 @@
 name: Deploy website
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions: {}
@@ -12,8 +10,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  package:
+  site:
     if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/site.yml
+
+  package:
+    needs: site
     runs-on: ubuntu-latest
     permissions:
       contents: read

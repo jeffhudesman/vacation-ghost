@@ -16,7 +16,7 @@ The scheduler builds local-time events in `vacation_ghost/schedule.py`. The cont
 ## Before opening a pull request
 
 - **Simulator or application changes.** Run the test suite and replay the fictional trip above. Call out changes to config keys and report fields because local consumers may depend on them.
-- **Website or setup instructions.** Check the changed page or instructions as a first-time visitor. The website and its validation workflow are maintained on `main`.
+- **Website or setup instructions.** Fetch the preview tags with `git fetch origin --tags`, then run `python3 tools/check_site.py` from the checkout with Node.js available. Check the changed page as a first-time visitor. For the browser checks, install `playwright==1.62.0` in your development environment and run `python3 tools/check_site.py --browser` with Chromium or Chrome installed.
 - **Device behavior.** Use fake outputs to test the normal path and relevant failures. For a physical test, record the Pi, OS, plug firmware, and output devices and follow the [bench checklist](docs/hardware.md#physical-release-checklist). State which hardware checks are still pending.
 
 Describe the behavior change and the checks you ran in the pull request. Documentation fixes and bench results are welcome.
@@ -43,5 +43,9 @@ Use Python 3.11 or later and install the CI build frontend with `python3 -m pip 
 ```
 
 The package CI job also checks the source distribution's expected files and verifies that a synthetic private config stays out. Use the [physical release checklist](docs/hardware.md#physical-release-checklist) before calling a Pi configuration verified.
+
+## Website deployment
+
+The [Deploy website workflow](.github/workflows/pages.yml) runs when a maintainer dispatches it on `main`. It validates the site and pinned simulator before uploading the Pages artifact.
 
 The project uses the [MIT License](LICENSE). Keep third-party code and custom WAV files under terms that allow redistribution before adding them to the project.
