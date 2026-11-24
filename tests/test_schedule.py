@@ -46,11 +46,12 @@ class DayPlanTests(unittest.TestCase):
         self.assertEqual((morning[-1].kind, morning[-1].value), ("lamp", ""))
         self.assertFalse(any(9 <= event.at.hour < 15 for event in plan.events))
 
-    def test_short_evening_keeps_lamp_and_scene_events_in_order(self):
+    def test_full_evening_keeps_lamp_and_scene_events_in_order(self):
         for offset in range(14):
             day = self.day + timedelta(days=offset)
             with self.subTest(day=day):
-                plan = build_day(day, self.tz, self.rooms, sunset_fallback=time(23, 45), bedtime=time(23, 55))
+                plan = build_day(day, self.tz, self.rooms, sunset_fallback=time(21), bedtime=time(23, 55))
+                self.assertIsNone(plan.evening_note)
                 self.assertEqual([event.at for event in plan.events], sorted(event.at for event in plan.events))
                 self.assertTrue(all(event.at.date() == day for event in plan.events))
                 self.assertLessEqual(plan.events[-1].at.time(), time(23, 55))
@@ -69,6 +70,26 @@ class DayPlanTests(unittest.TestCase):
                 self.assertEqual(scene_changes, [True, False, True, False])
                 self.assertEqual((lamp, glow), ("", ""))
 
+    def test_late_calculated_sunset_shortens_evening_without_backdating_it(self):
+        day = date(2030, 6, 21)
+        plan = build_day(day, ZoneInfo("Europe/Oslo"), self.rooms, sunset_fallback=time(18), bedtime=time(23, 20),
+                         latitude=59.9139, longitude=10.7522)
+        evening = [event for event in plan.events if event.at.hour >= 15]
+        self.assertAlmostEqual(plan.sunset.hour * 60 + plan.sunset.minute, 22 * 60 + 44, delta=4)
+        self.assertLessEqual(abs(evening[0].at - plan.sunset), timedelta(minutes=16))
+        self.assertLess(evening[-1].at - evening[0].at, timedelta(minutes=75))
+        self.assertEqual([bool(event.value) for event in evening if event.kind == "glow"], [True, False])
+        self.assertEqual((evening[-1].kind, evening[-1].value), ("lamp", ""))
+        self.assertIn("shortened", plan.evening_note)
+
+    def test_calculated_sunset_after_bedtime_skips_evening_only(self):
+        day = date(2030, 6, 21)
+        plan = build_day(day, ZoneInfo("Europe/Oslo"), self.rooms, sunset_fallback=time(18), bedtime=time(22, 15),
+                         latitude=59.9139, longitude=10.7522)
+        self.assertTrue(plan.events)
+        self.assertTrue(all(event.at.hour < 9 for event in plan.events))
+        self.assertIn("skipped", plan.evening_note)
+
     def test_spring_clock_gap_preserves_cue_order_and_uses_real_times(self):
         day = date(2026, 9, 5)
         tz = ZoneInfo("Pacific/Easter")
@@ -81,7 +102,7 @@ class DayPlanTests(unittest.TestCase):
             self.assertNotEqual(event.at.hour, 22)
             self.assertEqual(event.at.isoformat(), instant.astimezone(tz).isoformat())
         scene_changes = [bool(event.value) for event in plan.events if event.kind == "glow"]
-        self.assertEqual(scene_changes, [True, False, True, False])
+        self.assertEqual(scene_changes, [True, False])
         self.assertEqual((plan.events[-1].kind, plan.events[-1].value), ("lamp", ""))
 
     def test_evening_still_ends_before_midnight_when_bedtime_is_skipped(self):

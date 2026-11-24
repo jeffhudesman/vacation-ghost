@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from uuid import uuid4
 
-from .state import _private_opener
+from .state import InvalidState, _private_opener
 from .state import private_directory as _private_directory
 from .state import read_record as _read_json
 from .state import sync_directory
@@ -44,6 +44,27 @@ def trip_identity(trip_start: datetime, trip_end: datetime, *, dry_run: bool = F
     """Identify the trip and mode associated with a state directory."""
     identity = f"{_utc(trip_start).isoformat()}|{_utc(trip_end).isoformat()}|{trip_start.tzinfo}|{dry_run}"
     return hashlib.sha256(identity.encode()).hexdigest()[:24]
+
+
+def read_trip_id(state_dir: Path) -> str | None:
+    path = state_dir / ".trip.json"
+    owner = _read_json(path)
+    if owner is None:
+        return None
+    trip_id = owner.get("trip_id")
+    if not isinstance(trip_id, str) or not trip_id:
+        raise InvalidState(f"missing or invalid trip identity in {path}. Preserve this record and use a fresh directory for a new trip.")
+    return trip_id
+
+
+def _parse_timestamp(value: str) -> datetime:
+    return _utc(datetime.fromisoformat(value))
+
+
+def _record_entries(value: object, size: int) -> list[list]:
+    if not isinstance(value, list) or any(not isinstance(row, list) or len(row) != size for row in value):
+        raise ValueError("invalid record entries")
+    return value
 
 
 def _clock_time(when: datetime) -> str:
@@ -92,13 +113,15 @@ def _read_published_report(path: Path) -> dict | None:
         with open(path, encoding="utf-8", opener=_private_opener) as stream:
             report = json.load(stream)
     except FileNotFoundError:
-        return {}
+        return None
     except (json.JSONDecodeError, UnicodeDecodeError):
-        report = None
+        return {}
 
-    if isinstance(report, dict) and isinstance(report.get("id"), str):
-        return report
-    return None
+    return report if isinstance(report, dict) else {}
+
+
+def _nonnegative_int(value: object) -> bool:
+    return type(value) is int and value >= 0
 
 
 class ReportStore:
@@ -117,12 +140,11 @@ class ReportStore:
         self._prefix = "Simulation. " if dry_run else ""
         self.state_dir = Path(state_dir)
         _private_directory(self.state_dir)
-        owner_path = self.state_dir / ".trip.json"
-        owner = _read_json(owner_path).get("trip_id")
+        owner = read_trip_id(self.state_dir)
         if owner is None:
-            _write_json(owner_path, {"trip_id": self.trip_id})
+            _write_json(self.state_dir / ".trip.json", {"trip_id": self.trip_id})
         elif owner != self.trip_id:
-            raise ValueError("state directory belongs to a different trip; choose a fresh directory")
+            raise InvalidState("state directory belongs to a different trip; choose a fresh directory")
         self._daily = self.state_dir / "daily"
         _private_directory(self._daily)
         self._journal = self.state_dir / ".activity.json"
@@ -131,6 +153,8 @@ class ReportStore:
         self._intervals: list[tuple[datetime, datetime]] = []
         self._faults: list[_DeviceFault] = []
         self._shutdown_unconfirmed = False
+        self._shutdown_dirty = False
+        self._schedule_notes: dict[date, str] = {}
         self._disarmed_at: datetime | None = None
         self._completed_at: datetime | None = None
         self._last_status: tuple[bool, str | None, bool, bool, int, bool] | None = None
@@ -154,30 +178,60 @@ class ReportStore:
                 [fault.at.isoformat(), fault.device, fault.shutdown_unconfirmed] for fault in self._faults
             ],
             "shutdown_unconfirmed": self._shutdown_unconfirmed,
+            "schedule_notes": {day.isoformat(): note for day, note in self._schedule_notes.items()},
             "disarmed_at": self.disarmed_at.isoformat() if self.disarmed_at is not None else None,
         })
+        self._shutdown_dirty = False
 
     def _restore_journal(self) -> None:
-        data = _read_json(self._journal)
-        if data.get("trip_id") != self.trip_id:
-            return
-        self._intervals = [
-            (_utc(datetime.fromisoformat(start)), _utc(datetime.fromisoformat(end)))
-            for start, end in data["intervals"]
-        ]
-        self._faults = [
-            _DeviceFault(_utc(datetime.fromisoformat(at)), device, unconfirmed)
-            for at, device, unconfirmed in data.get("faults", ())
-        ]
-        self._shutdown_unconfirmed = data.get("shutdown_unconfirmed", False)
-        disarmed_at = data.get("disarmed_at")
-        if disarmed_at is not None:
-            self._disarmed_at = _utc(datetime.fromisoformat(disarmed_at))
-        run = data.get("open")
+        try:
+            data = _read_json(self._journal)
+            if data is None:
+                return
+            if data.get("trip_id") != self.trip_id:
+                raise ValueError("journal belongs to a different or unknown trip")
+            if "intervals" not in data or "open" not in data:
+                raise ValueError("journal is missing lamp intervals or an open-run field")
+            self._intervals = [
+                (_parse_timestamp(start), _parse_timestamp(end))
+                for start, end in _record_entries(data["intervals"], 2)
+            ]
+            if any(end <= start for start, end in self._intervals):
+                raise ValueError("invalid lamp interval")
+            self._faults = [
+                _DeviceFault(_parse_timestamp(at), device, unconfirmed)
+                for at, device, unconfirmed in _record_entries(data.get("faults", []), 3)
+            ]
+            if any(not isinstance(fault.device, str) or not fault.device
+                   or not isinstance(fault.shutdown_unconfirmed, bool) for fault in self._faults):
+                raise ValueError("invalid device fault")
+            self._shutdown_unconfirmed = data.get("shutdown_unconfirmed", False)
+            if not isinstance(self._shutdown_unconfirmed, bool):
+                raise ValueError("invalid shutdown status")
+            notes = data.get("schedule_notes", {})
+            if not isinstance(notes, dict) or any(not isinstance(note, str) or not note for note in notes.values()):
+                raise ValueError("invalid schedule notes")
+            self._schedule_notes = {date.fromisoformat(day): note for day, note in notes.items()}
+            disarmed_at = data.get("disarmed_at")
+            if disarmed_at is not None:
+                self._disarmed_at = _parse_timestamp(disarmed_at)
+                if self._disarmed_at >= self._end:
+                    raise ValueError("invalid disarm time")
+            run = data["open"]
+            if run is not None:
+                if not isinstance(run, dict):
+                    raise ValueError("invalid open lamp interval")
+                start = _parse_timestamp(run["start"])
+                observed_through = _parse_timestamp(run["observed_through"])
+                if observed_through < start:
+                    raise ValueError("invalid lamp checkpoint")
+                self._record_interval(start, observed_through)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise InvalidState(
+                f"Cannot use activity journal {self._journal}. Preserve it and use recover with the original "
+                f"configuration and state directory for pending shutdown. {exc}"
+            ) from exc
         if run is not None:
-            start = _utc(datetime.fromisoformat(run["start"]))
-            observed_through = _utc(datetime.fromisoformat(run["observed_through"]))
-            self._record_interval(start, observed_through)
             self._save_journal()
 
     @property
@@ -192,13 +246,13 @@ class ReportStore:
         if self._dry_run:
             return
         marker = _read_json(self._completion)
-        if marker or self._completion.exists():
+        if marker is not None:
             try:
-                completed_at = _utc(datetime.fromisoformat(marker["completed_at"]))
+                completed_at = _parse_timestamp(marker["completed_at"])
                 if marker.get("trip_id") != self.trip_id or completed_at < self._end:
                     raise ValueError("completion does not match the scheduled end of this trip")
             except (KeyError, TypeError, ValueError) as exc:
-                raise ValueError(f"invalid trip completion record at {self._completion}") from exc
+                raise InvalidState(f"invalid trip completion record at {self._completion}") from exc
             self._completed_at = completed_at
             return
         if self.disarmed_at is not None:
@@ -206,16 +260,9 @@ class ReportStore:
 
         # Older versions recorded completed runs only in the final report.
         prior = _read_published_report(self.state_dir / "trip.json")
-        if not prior or (
-            prior.get("id") != f"{self.trip_id}:trip" or prior.get("trip_id") != self.trip_id
-            or prior.get("schema_version") != 1 or prior.get("dry_run") is not False
-            or not isinstance(prior.get("message"), str)
-        ):
+        if prior is None or not self._valid_published_report(prior, f"{self.trip_id}:trip"):
             return
-        try:
-            published_at = _utc(datetime.fromisoformat(prior["published_at"]))
-        except (KeyError, TypeError, ValueError):
-            return
+        published_at = _parse_timestamp(prior["published_at"])
         if prior.get("ended_early") is True and published_at < self._end:
             self.disarm(published_at)
         else:
@@ -242,17 +289,35 @@ class ReportStore:
         return self.disarmed_at
 
     def record_device_fault(
-        self, at: datetime, device: str = "plug", *, shutdown_unconfirmed: bool = False
+        self, at: datetime, device: str = "plug", *, shutdown_unconfirmed: bool = False,
+        affects_shutdown_status: bool = True,
     ) -> None:
         """Persist a device error and, when appropriate, latch uncertain shutdown."""
         self._faults.append(_DeviceFault(_utc(at), device, shutdown_unconfirmed))
-        self._shutdown_unconfirmed |= shutdown_unconfirmed
+        if shutdown_unconfirmed and affects_shutdown_status:
+            self.set_shutdown_unconfirmed(True)
         self._save_journal()
+
+    @property
+    def shutdown_unconfirmed(self) -> bool:
+        return self._shutdown_unconfirmed
+
+    def set_shutdown_unconfirmed(self, unconfirmed: bool) -> None:
+        """Update current physical outcome without a fallible write before reporting it."""
+        if self._shutdown_unconfirmed != unconfirmed:
+            self._shutdown_unconfirmed = unconfirmed
+            self._shutdown_dirty = True
 
     def confirm_shutdown(self) -> None:
         """Clear shutdown uncertainty once all outputs acknowledge an off request."""
-        if self._shutdown_unconfirmed:
-            self._shutdown_unconfirmed = False
+        self.set_shutdown_unconfirmed(False)
+        if self._shutdown_dirty:
+            self._save_journal()
+
+    def record_schedule_note(self, day: date, note: str) -> None:
+        """Remember any evening schedule adjustment for the corresponding morning note."""
+        if self._schedule_notes.get(day) != note:
+            self._schedule_notes[day] = note
             self._save_journal()
 
     def _record_interval(self, start: datetime, end: datetime) -> None:
@@ -331,12 +396,56 @@ class ReportStore:
         end = _utc(datetime.combine(next_day, time(0), tzinfo=self._zone))
         return max(start, self._start), min(end, self._effective_end)
 
+    def _valid_published_report(
+        self, record: dict, report_id: str, *, delivery_date: str | None = None
+    ) -> bool:
+        try:
+            if (
+                type(record["schema_version"]) is not int or record["schema_version"] != 1
+                or record["id"] != report_id or record["trip_id"] != self.trip_id
+                or record["dry_run"] is not self._dry_run
+                or not isinstance(record["message"], str) or not record["message"].strip()
+            ):
+                return False
+            _parse_timestamp(record["published_at"])
+            seconds = record["lamp_seconds"]
+            first = record["first_lamp_activity_at"]
+            last = record["last_lamp_activity_at"]
+            if not _nonnegative_int(seconds):
+                return False
+            if first is None and last is None:
+                if seconds != 0:
+                    return False
+            elif _parse_timestamp(first) > _parse_timestamp(last):
+                return False
+
+            if not isinstance(record.get("shutdown_unconfirmed", False), bool):
+                return False
+            counts = record.get("faults_by_device", {})
+            if not isinstance(counts, dict) or any(not _nonnegative_int(count) for count in counts.values()):
+                return False
+            if not _nonnegative_int(record.get("device_faults", 0)):
+                return False
+
+            if delivery_date is None:
+                return _nonnegative_int(record["nights_with_lamp_activity"]) and isinstance(
+                    record.get("ended_early", False), bool
+                )
+            night = date.fromisoformat(delivery_date) - timedelta(days=1)
+            note = record.get("schedule_note")
+            return (
+                record["delivery_date"] == delivery_date and record["night_of"] == night.isoformat()
+                and (note is None or isinstance(note, str))
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False
+
     def _write_report(self, path: Path, report_id: str, published_at: datetime, fields: dict) -> None:
         existing = _read_published_report(path)
-        if existing is None:
+        if existing is not None:
+            if self._valid_published_report(existing, report_id, delivery_date=fields.get("delivery_date")):
+                return
             _preserve_malformed_report(path)
-        elif existing.get("id") == report_id:
-            return
         _write_json(path, {
             "schema_version": 1,
             "id": report_id,
@@ -361,6 +470,9 @@ class ReportStore:
             )
         else:
             message = "No lamp activity was confirmed last night."
+        note = self._schedule_notes.get(night)
+        if note is not None:
+            message += f" {note}"
         delivery_date = night + timedelta(days=1)
         previous_morning = _utc(datetime.combine(night, time(8), tzinfo=self._zone))
         due = _utc(datetime.combine(delivery_date, time(8), tzinfo=self._zone))
@@ -369,6 +481,7 @@ class ReportStore:
         self._write_report(self._daily / f"{delivery_date}.json", f"{self.trip_id}:{delivery_date}", now, {
             "night_of": night.isoformat(),
             "delivery_date": delivery_date.isoformat(),
+            "schedule_note": note,
             **metrics,
             **faults,
             "message": self._prefix + message + " Sound detection was off." + _fault_message(faults),

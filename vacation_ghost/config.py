@@ -8,6 +8,10 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
+LED_PIN = 18
+LED_CHANNELS = {10: 0, 12: 0, 13: 1, 18: 0, 19: 1, 21: 0}
+
+
 @dataclass(frozen=True)
 class Hardware:
     plugs: dict[str, str]
@@ -63,11 +67,14 @@ def _hardware(table: dict, rooms: tuple[str, str], directory: Path) -> Hardware:
     if len(set(plugs.values())) != 2:
         raise ValueError("hardware.plugs must use two distinct plugs")
     led_count = table.get("led_count", 0)
-    led_pin = table.get("led_pin", 18)
+    led_pin = table.get("led_pin", LED_PIN)
     if type(led_count) is not int or led_count < 0:
         raise ValueError("hardware.led_count must be a nonnegative integer")
     if type(led_pin) is not int or led_pin < 0:
         raise ValueError("hardware.led_pin must be a nonnegative GPIO number")
+    if led_count and led_pin not in LED_CHANNELS:
+        pins = ", ".join(map(str, LED_CHANNELS))
+        raise ValueError(f"hardware.led_pin must be a supported BCM pin ({pins}) when glow is enabled")
     sounds_dir = table.get("sounds_dir")
     volume = _bounded_number(
         table.get("volume", 0.08 if sounds_dir is not None else 0),
@@ -82,7 +89,7 @@ def _hardware(table: dict, rooms: tuple[str, str], directory: Path) -> Hardware:
     )
 
 
-def load_config(path: Path) -> Config:
+def load_config(path: Path, *, validate_sunset: bool = True) -> Config:
     try:
         with path.open("rb") as stream:
             document = tomllib.load(stream)
@@ -112,13 +119,17 @@ def load_config(path: Path) -> Config:
         seed = routine.get("seed", "vacation-ghost")
         if not isinstance(seed, str):
             raise ValueError("routine.seed must be a string")
+        sunset = _clock(routine["sunset"], time(15), time(22))
+        bedtime = _clock(routine["bedtime"], time(18), time(23, 55))
+        if validate_sunset and sunset >= bedtime:
+            raise ValueError("routine.sunset must be before routine.bedtime; choose an earlier fallback sunset or later bedtime")
         return Config(
             start=start,
             end=end,
             timezone=timezone,
             rooms=rooms,
-            sunset=_clock(routine["sunset"], time(15), time(22)),
-            bedtime=_clock(routine["bedtime"], time(18), time(23, 55)),
+            sunset=sunset,
+            bedtime=bedtime,
             latitude=latitude,
             longitude=longitude,
             seed=seed,

@@ -1,9 +1,10 @@
 # Copy into your private Pi config and replace the fictional dates and addresses.
-# Keep real trip dates, location, and LAN addresses out of the checkout.
+# Keep real trip dates, location, and LAN addresses in the private Pi config or .local/.
+# Set the numeric UTC offset on each timestamp for its date and named time zone.
 [trip]
-start = 2030-06-10T09:00:00Z
-end = 2030-06-13T13:00:00Z
-timezone = "Etc/UTC"
+start = 2030-06-10T09:00:00-04:00
+end = 2030-06-13T13:00:00-04:00
+timezone = "America/New_York"
 
 [routine]
 rooms = ["kitchen", "living"]
@@ -15,5 +16,6 @@ led_count = 0
 volume = 0
 
 [hardware.plugs]
+# Use two distinct plug devices. An IPv6 URL looks like "http://[fd00::20]".
 kitchen = "http://192.168.1.20"
 living = "http://192.168.1.21"

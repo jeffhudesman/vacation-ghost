@@ -13,7 +13,7 @@ from . import state
 from .config import Config, load_config, parse_timestamp
 from .engine import Controller, recover_outputs, rehearse, run, simulate
 from .outputs import PiOutputs, SimulationOutputs
-from .reports import ReportStore, trip_identity
+from .reports import ReportStore, read_trip_id, trip_identity
 
 
 def _outputs(config: Config) -> PiOutputs:
@@ -25,8 +25,18 @@ def _outputs(config: Config) -> PiOutputs:
 
 def _doctor(config: Config) -> int:
     outputs = _outputs(config)
+    checked_plugs: dict[str, str] = {}
+
+    def check_plug(room: str) -> str:
+        identity = outputs.plug_identity(room)
+        other = checked_plugs.get(identity)
+        if other is not None:
+            raise RuntimeError(f"same Shelly device as {other}. Configure two distinct plugs.")
+        checked_plugs[identity] = room
+        return "on" if outputs.lamp_status(room) else "off"
+
     checks = {
-        **{f"Plug {room}": lambda room=room: "on" if outputs.lamp_status(room) else "off" for room in config.rooms},
+        **{f"Plug {room}": lambda room=room: check_plug(room) for room in config.rooms},
         "TV glow": lambda: "driver available" if outputs.check_glow() else "disabled",
         "Sound": lambda: "player and cues available" if outputs.check_audio() else "disabled",
     }
@@ -42,7 +52,7 @@ def _doctor(config: Config) -> int:
 
 def _request_disarm(path: Path, identity: str, when: datetime) -> None:
     with state.lock_file(path.parent / ".disarm.lock", blocking=True):
-        owner = state.read_record(path.parent / ".trip.json").get("trip_id")
+        owner = read_trip_id(path.parent)
         if owner is not None and owner != identity:
             raise ValueError("state directory belongs to a different trip")
         if _disarm_time(path, identity) is None:
@@ -51,11 +61,19 @@ def _request_disarm(path: Path, identity: str, when: datetime) -> None:
 
 def _disarm_time(path: Path, identity: str) -> datetime | None:
     request = state.read_record(path)
-    if not request:
+    if request is None:
         return None
-    if request.get("trip_id") != identity:
+    owner = request.get("trip_id")
+    if not isinstance(owner, str) or not owner:
+        raise state.InvalidState(f"invalid disarm request in {path}: expected a trip ID")
+    if owner != identity:
         raise ValueError("disarm request belongs to a different trip; choose a fresh state directory")
-    return parse_timestamp(request["requested_at"])
+    try:
+        return parse_timestamp(request.get("requested_at"))
+    except ValueError as exc:
+        raise state.InvalidState(
+            f"invalid disarm request in {path}: requested_at must be an ISO 8601 timestamp with a UTC offset"
+        ) from exc
 
 
 def _stop_event() -> Event:
@@ -72,10 +90,12 @@ def _stop_event() -> Event:
 def _refresh_recovered_status(config: Config, state_dir: Path) -> None:
     """Publish confirmed physical shutdown when the existing reports are usable."""
     try:
-        trip_id = state.read_record(state_dir / ".trip.json").get("trip_id")
+        trip_id = read_trip_id(state_dir)
+        if trip_id is None:
+            return
         dry_run = trip_id == trip_identity(config.start, config.end, dry_run=True)
         if not dry_run and trip_id != trip_identity(config.start, config.end):
-            return
+            raise state.InvalidState(f"state directory belongs to a different trip: {state_dir}")
         reports = ReportStore(state_dir, config.start, config.end, dry_run=dry_run)
         now = datetime.now(config.timezone)
         if not dry_run and (request := _disarm_time(state_dir / ".disarm-request.json", trip_id)) is not None:
@@ -99,7 +119,7 @@ def _hardware_command(command: str, config: Config, state_dir: Path) -> None:
         if command == "disarm":
             try:
                 _request_disarm(disarm_path, identity, datetime.now(config.timezone))
-            except (OSError, ValueError, RuntimeError, KeyError) as exc:
+            except (OSError, ValueError, RuntimeError) as exc:
                 raise RuntimeError(
                     f"Could not record disarm ({exc}). Stop the runner and use recover with the original "
                     "configuration and state directory to retry any pending shutdown."
@@ -144,6 +164,15 @@ def _hardware_command(command: str, config: Config, state_dir: Path) -> None:
         outputs.close()
 
 
+def _at_timestamp(value: str) -> datetime:
+    try:
+        return parse_timestamp(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "use an ISO 8601 date and time with a UTC offset, for example 2030-06-11T09:00:00Z"
+        ) from exc
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a private, local occupancy routine.")
     parser.add_argument("--config", required=True, type=Path)
@@ -159,12 +188,12 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--state-dir", required=True, type=Path)
     sim = commands.add_parser("simulate", help="replay the trip without devices")
     sim.add_argument("--state-dir", required=True, type=Path, help="an empty directory for simulated reports")
-    sim.add_argument("--at", type=parse_timestamp, help="replay through this offset timestamp, defaulting to trip end")
+    sim.add_argument("--at", type=_at_timestamp, help="replay through this offset timestamp, defaulting to trip end")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     try:
-        config = load_config(args.config)
+        config = load_config(args.config, validate_sunset=args.command not in {"recover", "disarm"})
         if args.command == "doctor":
             return _doctor(config)
         if args.command == "simulate":

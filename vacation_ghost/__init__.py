@@ -1,1 +1,1 @@
-"""Local occupancy simulation for Raspberry Pi."""
+"""Run and simulate local occupancy routines for Raspberry Pi."""

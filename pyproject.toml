@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vacation-ghost"
-version = "0.1.0"
-description = "A local occupancy routine for Raspberry Pi"
+version = "0.1.0a1"
+description = "Local occupancy routines and a simulator for Raspberry Pi"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -14,6 +14,11 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
 ]
+
+[project.urls]
+Homepage = "https://github.com/jeffhudesman/vacation-ghost"
+Repository = "https://github.com/jeffhudesman/vacation-ghost"
+Issues = "https://github.com/jeffhudesman/vacation-ghost/issues"
 
 [project.scripts]
 vacation-ghost = "vacation_ghost.__main__:main"

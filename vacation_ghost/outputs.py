@@ -22,6 +22,8 @@ from pathlib import Path
 from time import monotonic
 from urllib.parse import urlsplit
 
+from .config import LED_CHANNELS, LED_PIN
+
 LOG = logging.getLogger(__name__)
 MAX_VOLUME = 0.20
 MAX_SOUND_SECONDS = 30
@@ -74,13 +76,17 @@ class SimulationOutputs:
 
 
 def _switch_origin(value: str) -> str:
-    url = urlsplit(value if "://" in value else f"http://{value}")
+    if "://" not in value:
+        if value.count(":") > 1 and not value.startswith("["):
+            value = f"[{value}]"
+        value = f"http://{value}"
     try:
+        url = urlsplit(value)
         address = ipaddress.ip_address(url.hostname or "")
         port = url.port
     except ValueError as exc:
         raise ValueError(
-            "Plug addresses must contain a private IP literal and optional port"
+            "Plug addresses must use a private IP literal. Put IPv6 addresses in brackets in URLs or with a port."
         ) from exc
     if (
         url.scheme not in {"http", "https"}
@@ -232,7 +238,7 @@ class PiOutputs:
         self,
         plugs: dict[str, str],
         led_count: int = 0,
-        led_pin: int = 18,
+        led_pin: int = LED_PIN,
         sounds_dir: Path | None = None,
         volume: float = 0,
     ) -> None:
@@ -240,6 +246,8 @@ class PiOutputs:
             raise ValueError(f"Volume must be between 0 and {MAX_VOLUME}")
         if led_count < 0:
             raise ValueError("LED count must be nonnegative")
+        if led_count and led_pin not in LED_CHANNELS:
+            raise ValueError(f"Unsupported LED data pin BCM {led_pin}. Use BCM {LED_PIN} (physical pin 12).")
         self._origins = {room: _switch_origin(value) for room, value in plugs.items()}
         if len(set(self._origins.values())) != len(self._origins):
             raise ValueError("Each room needs its own plug")
@@ -267,6 +275,14 @@ class PiOutputs:
             raise RuntimeError(f"Shelly did not report a switch state for {room}")
         return output
 
+    def plug_identity(self, room: str) -> str:
+        """Read a stable identity independent of the address used to reach the plug."""
+        result = self._switch_call(room, "Shelly.GetDeviceInfo")
+        mac = result.get("mac")
+        if not isinstance(mac, str) or not re.fullmatch(r"[0-9a-fA-F]{12}", mac):
+            raise RuntimeError(f"Shelly did not report a valid device MAC for {room}")
+        return mac.lower()
+
     def set_lamp(self, room: str, on: bool) -> None:
         result = self._switch_call(
             room, "Switch.Set", json.dumps({"id": 0, "on": on}).encode("utf-8")
@@ -287,7 +303,7 @@ class PiOutputs:
             return
         if self._strip is None:
             self._color, pixel_strip = _load_glow_driver()
-            strip = pixel_strip(self._led_count, self._led_pin)
+            strip = pixel_strip(self._led_count, self._led_pin, channel=LED_CHANNELS[self._led_pin])
             strip.begin()
             self._strip = strip
         color = self._color(*rgb)

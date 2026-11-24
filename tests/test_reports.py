@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from vacation_ghost.reports import ReportStore, trip_identity
+from vacation_ghost.state import InvalidState
 
 
 class ReportTest(unittest.TestCase):
@@ -115,6 +116,54 @@ class ReportTest(unittest.TestCase):
         self.store().publish_due(self.end + timedelta(hours=1))
         self.assertEqual(self.read("daily/2030-06-11.json"), current)
         self.assertEqual(list(broken.parent.glob(f"{broken.name}.corrupt-*")), archives)
+
+    def test_matching_id_without_report_data_is_archived_and_regenerated(self):
+        reports = self.store()
+        report = self.state / "daily" / "2030-06-11.json"
+        expected_id = f"{reports.trip_id}:2030-06-11"
+        original = json.dumps({"id": expected_id}).encode()
+        report.write_bytes(original)
+        with self.assertLogs("vacation_ghost.reports", "WARNING"):
+            reports.publish_due(self.end)
+        self.assertEqual(self.read("daily/2030-06-11.json")["id"], expected_id)
+        self.assertIsInstance(self.read("daily/2030-06-11.json")["message"], str)
+        self.assertEqual(next(report.parent.glob(f"{report.name}.corrupt-*")).read_bytes(), original)
+
+    def test_existing_malformed_trip_owner_and_journal_are_preserved(self):
+        owner = self.state / ".trip.json"
+        owner.write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(InvalidState, "missing or invalid trip identity"):
+            self.store()
+        self.assertEqual(owner.read_text(encoding="utf-8"), "{}")
+        owner.unlink()
+        reports = self.store()
+        journal = self.state / ".activity.json"
+        invalid = ({"trip_id": reports.trip_id}, {"trip_id": "different", "intervals": [], "open": None})
+        for record in invalid:
+            with self.subTest(record=record):
+                original = json.dumps(record)
+                journal.write_text(original, encoding="utf-8")
+                with self.assertRaisesRegex(InvalidState, "Cannot use activity journal.*recover"):
+                    self.store()
+                self.assertEqual(journal.read_text(encoding="utf-8"), original)
+
+    def test_legacy_journal_and_nightly_schedule_note_survive_restart(self):
+        reports = self.store()
+        evening = self.start + timedelta(hours=9)
+        journal = self.state / ".activity.json"
+        journal.write_text(json.dumps({
+            "trip_id": reports.trip_id,
+            "intervals": [[evening.isoformat(), (evening + timedelta(minutes=2)).isoformat()]],
+            "open": None,
+        }), encoding="utf-8")
+        reports = self.store()
+        note = "The evening routine was shortened because sunset was late."
+        reports.record_schedule_note(evening.date(), note)
+        self.store().publish_due(self.start + timedelta(days=1))
+        daily = self.read("daily/2030-06-11.json")
+        self.assertEqual(daily["lamp_seconds"], 120)
+        self.assertEqual(daily["schedule_note"], note)
+        self.assertIn(note, daily["message"])
 
     def test_structurally_invalid_final_report_is_preserved_and_regenerated(self):
         reports = self.store()

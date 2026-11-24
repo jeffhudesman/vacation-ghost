@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, call, patch
 
 from vacation_ghost import __main__ as cli
+from vacation_ghost import reports as report_module
 from vacation_ghost.config import Hardware, load_config
 from vacation_ghost.engine import Controller, rehearse, run
 from vacation_ghost.outputs import SimulationOutputs
@@ -17,6 +18,7 @@ from vacation_ghost.state import DeviceBusy, OutputReservation, lock_file
 
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "vacation.example.toml"
+TEST_HARDWARE_ID = "test-hardware"
 
 
 class RecoveryTests(unittest.TestCase):
@@ -29,7 +31,7 @@ class RecoveryTests(unittest.TestCase):
         self.device.mkdir()
         self.config = load_config(EXAMPLE)
         self.reports = ReportStore(self.trip, self.config.start, self.config.end)
-        self.reservation = OutputReservation(self.trip, self.device)
+        self.reservation = OutputReservation(self.trip, self.device, hardware_id=TEST_HARDWARE_ID)
         self.stop = Mock()
         self.stop.is_set.return_value = False
         self.stop.wait.return_value = False
@@ -87,7 +89,7 @@ class RecoveryTests(unittest.TestCase):
             if ticks == 1:
                 self.assertTrue(outputs.lamps[kitchen])
             elif ticks == 2:
-                reads.assert_called_once_with(kitchen)
+                self.assertEqual(reads.call_args_list, [call(living), call(kitchen), call(living)])
                 self.assertEqual(writes.call_count, 3)  # Startup OFF, OFF, then kitchen ON.
                 outputs.lamps[kitchen] = False  # The active plug loses power.
                 outputs.lamps[living] = True  # The other relay is on out of band.
@@ -157,7 +159,7 @@ class RecoveryTests(unittest.TestCase):
         restarted = ReportStore(self.trip, self.config.start, self.config.end)
         recovered = SimulationOutputs()
         run(self.config, Controller(self.config.rooms, recovered, restarted), self.stop,
-            reservation=OutputReservation(self.trip, self.device))
+            reservation=OutputReservation(self.trip, self.device, hardware_id=TEST_HARDWARE_ID))
         self.assertFalse(self.reservation.engaged)
         self.assertEqual(recovered.lamps, dict.fromkeys(self.config.rooms, False))
         self.assertFalse(self.read("latest.json")["shutdown_unconfirmed"])
@@ -180,11 +182,37 @@ class RecoveryTests(unittest.TestCase):
                          [(kitchen, False), (living, False)] * 2)
         self.assertFalse(self.reservation.engaged)
 
+    def test_led_shutdown_failure_stays_unconfirmed_when_journal_write_fails(self):
+        self.now = self.config.end
+        self.reservation.engage()
+        self.reservation.before_glow()
+        outputs = Mock(spec=SimulationOutputs)
+        outputs.set_glow.side_effect = RuntimeError("LED did not acknowledge off")
+        write_report = report_module._write_json
+
+        def fail_activity_write(path, record):
+            if path.name == ".activity.json":
+                raise OSError("activity journal unavailable")
+            write_report(path, record)
+
+        with (
+            patch("vacation_ghost.engine.sleep"),
+            patch.object(report_module, "_write_json", side_effect=fail_activity_write),
+            self.assertLogs("vacation_ghost.engine", "WARNING"),
+            self.assertRaisesRegex(OSError, "activity journal unavailable"),
+        ):
+            run(self.config, Controller(self.config.rooms, outputs, self.reports), self.stop,
+                reservation=self.reservation)
+        self.assertEqual(outputs.set_glow.call_args_list, [call((0, 0, 0))] * 3)
+        self.assertTrue(self.reservation.engaged)
+        self.assertTrue(self.read("latest.json")["shutdown_unconfirmed"])
+        self.assertTrue(self.read("trip.json")["shutdown_unconfirmed"])
+
     def test_legacy_marker_still_recovers_if_migration_write_fails(self):
         self.now = self.config.start
         legacy = OutputReservation(self.trip)
         legacy.engage()
-        reservation = OutputReservation(self.trip, self.device)
+        reservation = OutputReservation(self.trip, self.device, hardware_id=TEST_HARDWARE_ID)
         outputs = Mock(spec=SimulationOutputs)
         with (
             patch.object(reservation, "engage", side_effect=OSError("migration write failed")),
@@ -220,6 +248,7 @@ class RecoveryTests(unittest.TestCase):
     def test_plug_fault_at_deadline_still_persists_completion_before_off(self):
         self.now = self.config.start
         outputs = Mock(spec=SimulationOutputs)
+        outputs.lamp_status.return_value = False
 
         def fail_on_at_deadline(_room, on):
             if on:
@@ -250,7 +279,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse((self.trip / "trip.json").exists())
         outputs = Mock(spec=SimulationOutputs)
         run(self.config, Controller(self.config.rooms, outputs, restarted), self.stop,
-            reservation=OutputReservation(self.trip, self.device))
+            reservation=OutputReservation(self.trip, self.device, hardware_id=TEST_HARDWARE_ID))
         self.assertEqual(outputs.set_lamp.call_args_list, [call(room, False) for room in self.config.rooms])
         self.assertFalse(self.reservation.engaged)
         self.assertFalse(self.read("latest.json")["active"])
@@ -258,7 +287,8 @@ class RecoveryTests(unittest.TestCase):
 
         outputs.reset_mock()
         run(self.config, Controller(self.config.rooms, outputs, restarted), self.stop,
-            reservation=OutputReservation(self.trip, self.device), disarm_requested=lambda: self.config.start)
+            reservation=OutputReservation(self.trip, self.device, hardware_id=TEST_HARDWARE_ID),
+            disarm_requested=lambda: self.config.start)
         self.assertEqual(outputs.mock_calls, [])
         self.assertFalse(self.read("latest.json")["disarmed"])
 
@@ -315,12 +345,12 @@ class RecoveryTests(unittest.TestCase):
         config = self.live_config()
         legacy = OutputReservation(self.trip)
         legacy.engage()
-        (self.trip / ".activity.json").write_text("invalid json", encoding="utf-8")
+        (self.trip / ".activity.json").write_text(json.dumps({"trip_id": self.reports.trip_id}), encoding="utf-8")
         outputs = Mock(spec=SimulationOutputs)
         with (
             patch.object(cli.state, "DEVICE_DIR", self.device),
             patch.object(cli, "_outputs", return_value=outputs),
-            self.assertRaisesRegex(RuntimeError, "Shutdown confirmed. Could not open reports"),
+            self.assertRaisesRegex(RuntimeError, "Shutdown confirmed. Could not open reports.*missing lamp"),
         ):
             cli._hardware_command("run", config, self.trip)
         self.assertEqual([call.args for call in outputs.set_lamp.call_args_list],

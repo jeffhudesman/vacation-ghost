@@ -7,12 +7,18 @@ import sys
 import tempfile
 import unittest
 import wave
+from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
 
+from vacation_ghost import __main__ as cli
 from vacation_ghost.config import load_config
 from vacation_ghost.outputs import MAX_SOUND_BYTES, PiOutputs, SOUND_CUES, SOUND_STOP_TIMEOUT
+
+
+LIGHTS_ONLY = Path(__file__).resolve().parents[1] / "examples" / "vacation.lights-only.toml"
 
 
 class PiOutputsTest(unittest.TestCase):
@@ -90,10 +96,28 @@ living = "192.168.1.21"
             outputs.set_lamp("kitchen", False)
 
     def test_plugs_accept_only_direct_lan_origins(self):
-        for origin in ("127.0.0.1", "169.254.0.1", "8.8.8.8", "plug.local", "[fe80::1]"):
+        for origin in ("127.0.0.1", "169.254.0.1", "8.8.8.8", "plug.local", "fe80::1", "fd00::2%eth0"):
             with self.subTest(origin=origin), self.assertRaises(ValueError):
                 PiOutputs({"kitchen": origin})
         PiOutputs({"kitchen": "192.168.1.20", "living": "https://[fd00::2]:443"})
+
+    def test_bare_and_bracketed_ipv6_canonicalize_to_same_origin(self):
+        outputs = PiOutputs({"kitchen": "fd00:0:0:0::2"})
+        with patch("vacation_ghost.outputs._rpc_request", return_value=b'{"output":false}') as rpc:
+            self.assertFalse(outputs.lamp_status("kitchen"))
+        rpc.assert_called_once_with("http://[fd00::2]", "Switch.GetStatus?id=0", None)
+        with self.assertRaisesRegex(ValueError, "Each room needs its own plug"):
+            PiOutputs({"kitchen": "fd00::2", "living": "http://[fd00::2]:80"})
+
+    def test_device_identity_requires_valid_shelly_mac(self):
+        outputs = PiOutputs(self.plugs)
+        for response in (b"{}", b'{"mac":false}', b'{"mac":"not-a-mac"}'):
+            with (
+                self.subTest(response=response),
+                patch("vacation_ghost.outputs._rpc_request", return_value=response),
+                self.assertRaisesRegex(RuntimeError, "valid device MAC for kitchen"),
+            ):
+                outputs.plug_identity("kitchen")
 
     def test_rpc_encodes_switch_post_and_confirms_with_get(self):
         sockets = []
@@ -245,11 +269,21 @@ living = "192.168.1.21"
             outputs = PiOutputs(self.plugs, led_count=2)
             pixel_strip.assert_not_called()
             outputs.set_glow((11, 15, 18))
-        pixel_strip.assert_called_once_with(2, 18)
+        pixel_strip.assert_called_once_with(2, 18, channel=0)
         strip.begin.assert_called_once_with()
         color.assert_called_once_with(11, 15, 18)
         self.assertEqual([call.args for call in strip.setPixelColor.call_args_list], [(0, 12345), (1, 12345)])
         strip.show.assert_called_once_with()
+
+    def test_glow_maps_channel_one_and_rejects_invalid_pins_when_enabled(self):
+        driver = Mock()
+        driver.PixelStrip.return_value.numPixels.return_value = 0
+        with patch("vacation_ghost.outputs._load_glow_driver", return_value=(driver.Color, driver.PixelStrip)):
+            PiOutputs(self.plugs, led_count=2, led_pin=19).set_glow((0, 0, 0))
+        driver.PixelStrip.assert_called_once_with(2, 19, channel=1)
+        with self.assertRaisesRegex(ValueError, "Use BCM 18"):
+            PiOutputs(self.plugs, led_count=2, led_pin=17)
+        PiOutputs(self.plugs, led_pin=17)
 
     def test_play_sound_caps_digital_amplitude(self):
         player = Mock()
@@ -328,3 +362,72 @@ living = "192.168.1.21"
         player.kill.assert_called_once_with()
         outputs.stop_sound()
         self.assertIsNone(outputs._player)
+
+
+class CliDiagnosticsTest(unittest.TestCase):
+    def test_doctor_confirms_distinct_devices_without_logging_identities(self):
+        responses = [
+            b'{"mac":"AABBCCDDEE01"}', b'{"output":false}',
+            b'{"mac":"AABBCCDDEE02"}', b'{"output":true}',
+        ]
+        output = io.StringIO()
+        with patch("vacation_ghost.outputs._rpc_request", side_effect=responses) as rpc, redirect_stdout(output):
+            exit_code = cli.main(["--config", str(LIGHTS_ONLY), "doctor"])
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(output.getvalue().splitlines(), [
+            "Plug kitchen: off", "Plug living: on", "TV glow: disabled", "Sound: disabled",
+        ])
+        self.assertEqual([entry.args[1:] for entry in rpc.call_args_list], [
+            ("Shelly.GetDeviceInfo", None), ("Switch.GetStatus?id=0", None),
+            ("Shelly.GetDeviceInfo", None), ("Switch.GetStatus?id=0", None),
+        ])
+
+    def test_doctor_rejects_two_origins_for_one_device(self):
+        config = load_config(LIGHTS_ONLY)
+        config = replace(config, hardware=replace(config.hardware, plugs={
+            "kitchen": "http://192.168.1.60", "living": "https://192.168.1.60",
+        }))
+        responses = [b'{"mac":"AABBCCDDEE01"}', b'{"output":false}', b'{"mac":"aabbccddee01"}']
+        output = io.StringIO()
+        with (
+            patch.object(cli, "load_config", return_value=config),
+            patch("vacation_ghost.outputs._rpc_request", side_effect=responses),
+            redirect_stdout(output),
+        ):
+            exit_code = cli.main(["--config", str(LIGHTS_ONLY), "doctor"])
+        self.assertEqual(exit_code, 1)
+        self.assertIn("Plug living: failed (same Shelly device as kitchen. Configure two distinct plugs.)", output.getvalue())
+        self.assertNotIn("aabbccddee01", output.getvalue().lower())
+
+    def test_simulate_at_error_explains_format_and_missing_offset(self):
+        for value in ("not a date", "2030-06-11T09:00:00"):
+            error = io.StringIO()
+            with self.subTest(value=value), redirect_stderr(error), self.assertRaises(SystemExit) as exit_code:
+                cli.main(["--config", str(LIGHTS_ONLY), "simulate", "--state-dir", "unused", "--at", value])
+            self.assertEqual(exit_code.exception.code, 2)
+            self.assertIn("ISO 8601 date and time with a UTC offset", error.getvalue())
+            self.assertIn("2030-06-11T09:00:00Z", error.getvalue())
+
+    def test_disarm_command_reports_damaged_request_without_rewriting_it(self):
+        config = load_config(LIGHTS_ONLY)
+        outputs = Mock(spec=PiOutputs)
+        with tempfile.TemporaryDirectory() as directory:
+            state_dir = Path(directory)
+            path = state_dir / ".disarm-request.json"
+            original = json.dumps({"trip_id": cli.trip_identity(config.start, config.end)})
+            path.write_text(original)
+            error = io.StringIO()
+            with (
+                patch.object(cli, "_outputs", return_value=outputs),
+                patch.object(cli.state, "DEVICE_DIR", state_dir / "device"),
+                patch.object(cli.state, "hardware_directory", side_effect=cli.state.private_directory),
+                redirect_stderr(error),
+                self.assertRaises(SystemExit) as exit_code,
+            ):
+                cli.main(["--config", str(LIGHTS_ONLY), "disarm", "--state-dir", directory])
+            self.assertEqual(exit_code.exception.code, 1)
+            self.assertIn("requested_at must be an ISO 8601 timestamp with a UTC offset", error.getvalue())
+            self.assertIn(str(path), error.getvalue())
+            self.assertIn("use recover", error.getvalue())
+            self.assertEqual(path.read_text(), original)
+        outputs.set_lamp.assert_not_called()

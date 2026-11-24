@@ -21,6 +21,7 @@ class DayPlan:
     day: date
     sunset: datetime
     events: tuple[Event, ...]
+    evening_note: str | None = None
 
 
 def _local_instant(wall_time: datetime, tz: ZoneInfo) -> datetime:
@@ -123,14 +124,18 @@ def build_day(
         # Bedtime fell in a clock jump that would otherwise carry it past the day's limit.
         night_end -= timedelta(minutes=5)
     first_evening = _local_instant(datetime.combine(day, time(15)), tz)
-    night_start = min(
-        max(sunset.astimezone(UTC) + timedelta(minutes=rng.randint(-14, 16)), first_evening),
-        night_end - timedelta(minutes=75),
-    )
-    if night_start >= first_evening:
+    night_start = max(sunset.astimezone(UTC) + timedelta(minutes=rng.randint(-14, 16)), first_evening)
+    evening_length = night_end - night_start
+    note = None
+    if evening_length >= timedelta(minutes=75):
         events.extend(_evening_events(night_start, night_end, rooms, rng))
+    elif evening_length >= timedelta(minutes=20):
+        events.extend(_short_evening(night_start, night_end, rooms, rng))
+        note = "Evening activity was shortened because sunset was close to bedtime."
+    else:
+        note = "Evening activity was skipped because sunset was too close to bedtime."
     events.sort(key=lambda event: event.at)
-    return DayPlan(day, sunset, tuple(Event(event.at.astimezone(tz), event.kind, event.value) for event in events))
+    return DayPlan(day, sunset, tuple(Event(event.at.astimezone(tz), event.kind, event.value) for event in events), note)
 
 
 def _morning_events(start: datetime, kitchen: str, rng: random.Random) -> list[Event]:
@@ -142,6 +147,19 @@ def _morning_events(start: datetime, kitchen: str, rng: random.Random) -> list[E
     if rng.random() < 0.45:
         events.append(Event(start + timedelta(minutes=rng.randint(7, 11)), "sound", "cabinet"))
     return events
+
+
+def _short_evening(start: datetime, end: datetime, rooms: tuple[str, str], rng: random.Random) -> list[Event]:
+    kitchen, living_room = rooms
+    living_start = start + (end - start) * rng.uniform(0.20, 0.30)
+    return [
+        Event(start, "lamp", kitchen),
+        Event(living_start, "lamp", living_room),
+        Event(living_start + timedelta(minutes=1), "glow", rng.choice(("drama", "sports"))),
+        Event(living_start + timedelta(minutes=4), "sound", "tv"),
+        Event(end - timedelta(minutes=2), "glow", ""),
+        Event(end, "lamp", ""),
+    ]
 
 
 def _evening_events(
