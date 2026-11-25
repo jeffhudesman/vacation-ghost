@@ -24,24 +24,44 @@ function setupEveningDemo() {
   const scene = card.querySelector(".routine-scene");
   const sceneTime = card.querySelector("#scene-time");
   const sceneText = card.querySelector("#scene-text");
+  const soundState = card.querySelector("#scene-sound-state");
+  const readNote = card.querySelector("#scene-read-note");
   const progress = card.querySelector("#scene-progress");
   const report = card.querySelector(".demo-report");
   const sceneButtons = [...card.querySelectorAll("[data-scene-button]")];
   const sceneDuration = 3000;
   const lastScene = demoScenes.length - 1;
+  progress.max = lastScene * sceneDuration / 1000;
   const playLabels = { ready: "Play demo", playing: "Pause", paused: "Resume", finished: "Replay" };
   let sceneIndex = 0;
   let playState = "ready";
   let timer;
+  let progressFrame;
   let nextSceneAt;
   let remaining = sceneDuration;
   let soundEnabled = false;
 
+  function updateProgress(timeLeft = sceneDuration) {
+    const elapsed = sceneDuration - Math.min(sceneDuration, Math.max(0, timeLeft));
+    progress.value = (sceneIndex * sceneDuration + elapsed) / 1000;
+  }
+
+  function animateProgress(now) {
+    updateProgress(nextSceneAt - now);
+    progressFrame = requestAnimationFrame(animateProgress);
+  }
+
   function setPlayback(state) {
     playState = state;
     playButton.textContent = playLabels[state];
-    if (state === "playing") card.dataset.playing = "true";
-    else delete card.dataset.playing;
+    readNote.hidden = state !== "finished";
+    if (state === "playing") {
+      card.dataset.playing = "true";
+      progressFrame = requestAnimationFrame(animateProgress);
+    } else {
+      delete card.dataset.playing;
+      cancelAnimationFrame(progressFrame);
+    }
   }
 
   function stopAudio() {
@@ -53,6 +73,7 @@ function setupEveningDemo() {
     if (playState === "playing") {
       clearTimeout(timer);
       remaining = Math.max(0, nextSceneAt - performance.now());
+      updateProgress(remaining);
       setPlayback("paused");
     }
     stopAudio();
@@ -68,14 +89,18 @@ function setupEveningDemo() {
     audio.play().catch(() => {});
   }
 
-  function showScene(index) {
-    sceneIndex = index;
-    const { name, time, label, text, lamp = "none", glow = "none", period = "evening", cue } = demoScenes[index];
+  function showScene(index = null) {
+    sceneIndex = index ?? 0;
+    const setting = index === null ? { name: "ready", text: "Both lamps are off at dusk." } : demoScenes[index];
+    const { name, time, label, text, lamp = "none", glow = "none", period = "evening", cue } = setting;
     Object.assign(scene.dataset, { scene: name, lamp, glow, period, cue: cue ?? "none" });
-    sceneTime.dateTime = time;
-    sceneTime.textContent = label;
+    sceneTime.hidden = !time;
+    if (time) {
+      sceneTime.dateTime = time;
+      sceneTime.textContent = label;
+    }
     sceneText.textContent = text;
-    progress.value = index + 1;
+    updateProgress();
     if (index === lastScene) report.dataset.current = "true";
     else delete report.dataset.current;
     for (const button of sceneButtons) {
@@ -104,13 +129,14 @@ function setupEveningDemo() {
       remaining = sceneDuration;
       showScene(0);
     }
-    setPlayback("playing");
     advanceAfter(remaining);
+    setPlayback("playing");
   });
 
   soundButton.addEventListener("click", () => {
     soundEnabled = !soundEnabled;
     soundButton.setAttribute("aria-pressed", String(soundEnabled));
+    soundState.textContent = soundEnabled ? "on" : "off";
     playCue();
   });
 
@@ -143,7 +169,7 @@ function setupEveningDemo() {
   });
   window.addEventListener("pagehide", pausePlayback);
 
-  showScene(0);
+  showScene();
   setPlayback("ready");
   card.querySelector(".routine-interactions").hidden = false;
 }
@@ -179,7 +205,7 @@ function reachSetupHeading() {
 }
 
 function selectTabFromHash(restoreScroll = false) {
-  const returnTo = window.history.state?.setupReturn;
+  const returnTo = window.history.state?.reportReturn;
   const savedTab = tabs.find((tab) => tab.id === returnTo?.tab);
   if (restoreScroll && savedTab && Number.isFinite(returnTo.top)) {
     selectTab(savedTab);
@@ -229,11 +255,11 @@ for (const [index, panel] of panels.entries()) {
   }
 }
 
-for (const link of document.querySelectorAll('.setup-panel a[href="#sample-report"]')) {
+for (const link of document.querySelectorAll('a[href="#sample-report"]')) {
   link.addEventListener("click", (event) => {
     if (!followsHere(event) || window.location.hash === "#sample-report") return;
     const tab = tabs.find((option) => option.getAttribute("aria-selected") === "true");
-    window.history.replaceState({ ...window.history.state, setupReturn: { tab: tab.id, top: window.scrollY } }, "");
+    window.history.replaceState({ ...window.history.state, reportReturn: { tab: tab.id, top: window.scrollY } }, "");
   });
 }
 

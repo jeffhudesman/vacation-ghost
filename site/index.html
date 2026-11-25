@@ -81,9 +81,10 @@
               <p class="routine-prompt">Sunset to morning. Play the demo or jump to a scene. Sound is optional.</p>
               <div class="routine-playback">
                 <button class="scene-play" id="scene-play" type="button">Play demo</button>
-                <button class="scene-sound" id="scene-sound" type="button" aria-pressed="false">Sound</button>
+                <a class="scene-read-note" id="scene-read-note" href="#sample-report" hidden>Read the morning note</a>
+                <button class="scene-sound" id="scene-sound" type="button" aria-pressed="false">Sound <span id="scene-sound-state" aria-hidden="true">off</span></button>
               </div>
-              <progress class="scene-progress" id="scene-progress" value="1" max="8" aria-label="Demo progress"></progress>
+              <progress class="scene-progress" id="scene-progress" value="0" max="21" aria-label="Demo progress"></progress>
               <details class="routine-picker" open>
                 <summary>Jump to a scene</summary>
                 <div class="routine-steps" role="group" aria-label="Sample scenes">
@@ -103,7 +104,7 @@
               <time id="scene-time" datetime="19:34">7:34 PM</time>
               <span id="scene-text">The kitchen lamp switches on.</span>
             </div>
-            <figure class="demo-report" id="sample-report">
+            <figure class="demo-report" id="sample-report" tabindex="-1">
               <figcaption>Example morning note</figcaption>
               <blockquote id="sample-report-text">“Lamps ran between 7:34 PM and 10:45 PM local time (3 hr 11 min total).”</blockquote>
             </figure>
