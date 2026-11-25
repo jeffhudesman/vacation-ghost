@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 from collections import Counter
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from html.parser import HTMLParser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -20,6 +21,18 @@ ROOT = Path(__file__).resolve().parents[1]
 SITE = ROOT / "site"
 REPOSITORY = "https://github.com/jeffhudesman/vacation-ghost"
 RAW_REPOSITORY = "https://raw.githubusercontent.com/jeffhudesman/vacation-ghost"
+DEMO_SCENES = {
+    "Sunset": ("kitchen", "19:34", "kitchen", "none", "evening"),
+    "After dinner": ("living", "20:10", "living", "none", "evening"),
+    "TV time": ("tv", "20:18", "living", "sports", "evening"),
+    "Kitchen break": ("break", "21:38", "kitchen", "none", "evening"),
+    "Late TV": ("drama", "21:48", "living", "drama", "evening"),
+    "Bedtime": ("bedtime", "22:45", "none", "none", "evening"),
+    "Morning kitchen": ("morning", "07:18", "kitchen", "none", "dawn"),
+    "Morning note": ("report", "08:00", "none", "none", "dawn"),
+}
+DEMO_AUDIO = ("assets/demo-tv.mp3", "assets/demo-cabinet.mp3", "assets/demo-kettle.mp3")
+SCENE_DELAY = 3000
 
 
 class PageSource(HTMLParser):
@@ -66,6 +79,8 @@ def check_source(page):
 
     css = (SITE / "styles.css").read_text(encoding="utf-8")
     assets = re.findall(r'url\("([^"]+)"\)', css)
+    for cue in DEMO_AUDIO:
+        assert (SITE / cue).is_file() and (SITE / cue).stat().st_size > 0, cue
     for url in [*page.links, *assets]:
         parts = urlsplit(url)
         if not parts.netloc:
@@ -114,6 +129,137 @@ class SiteHandler(SimpleHTTPRequestHandler):
         pass
 
 
+def assert_scene(page, group, label):
+    scene = page.locator(".routine-scene")
+    name, clock, lamp, glow, period = DEMO_SCENES[label]
+    for attribute, expected in (
+        ("data-scene", name), ("data-lamp", lamp), ("data-glow", glow), ("data-period", period),
+    ):
+        assert scene.get_attribute(attribute) == expected, (label, attribute)
+    assert page.locator("#scene-time").get_attribute("datetime") == clock, label
+    assert group.locator('[aria-pressed="true"]').count() == 1, label
+    assert group.get_by_role("button", name=label, exact=True).get_attribute("aria-pressed") == "true", label
+
+
+def check_scene_selection(page, width, height):
+    page.get_by_role("link", name="Try the browser demo").click()
+    group = page.get_by_role("group", name="Sample evening scenes")
+    assert group.bounding_box()["y"] < height, width
+    assert page.locator("#scene-sound").get_attribute("aria-pressed") == "false", width
+    assert page.locator("#scene-audio").get_attribute("src") is None, width
+    assert_scene(page, group, "Sunset")
+    for label in DEMO_SCENES:
+        group.get_by_role("button", name=label, exact=True).click()
+        assert_scene(page, group, label)
+        if label == "TV time":
+            assert page.locator(".routine-scene").evaluate("""scene =>
+                scene.getAnimations({ subtree: true }).length === 0
+            """), width
+    assert page.locator("#sample-report").is_visible(), width
+    card = page.locator(".routine-card").bounding_box()
+    controls = [*group.get_by_role("button").all(), page.locator("#scene-play"), page.locator("#scene-sound")]
+    for control in controls:
+        box = control.bounding_box()
+        assert box is not None, (width, control)
+        assert card["x"] <= box["x"] <= box["x"] + box["width"] <= card["x"] + card["width"], (width, control)
+
+
+def check_demo_playback(page, url):
+    # Mock only playback calls so the test does not need an audio device.
+    page.add_init_script("""
+        window.demoAudioCalls = { play: [], pause: 0 };
+        const pause = HTMLMediaElement.prototype.pause;
+        HTMLMediaElement.prototype.pause = function () {
+            window.demoAudioCalls.pause += 1;
+            return pause.call(this);
+        };
+        HTMLMediaElement.prototype.play = function () {
+            window.demoAudioCalls.play.push(this.getAttribute("src"));
+            return Promise.resolve();
+        };
+    """)
+    start = datetime(2030, 6, 10, tzinfo=UTC)
+    page.clock.install(time=start)
+    page.clock.pause_at(start + timedelta(minutes=1))
+    page.goto(url)
+    group = page.get_by_role("group", name="Sample evening scenes")
+    play = page.locator("#scene-play")
+    sound = page.locator("#scene-sound")
+    audio = page.locator("#scene-audio")
+    progress = page.locator("#scene-progress")
+
+    assert play.inner_text() == "Play evening"
+    assert progress.evaluate("progress => progress.value") == 1
+    assert progress.evaluate("progress => progress.max") == len(DEMO_SCENES)
+    sound.dispatch_event("click")
+    assert sound.get_attribute("aria-pressed") == "true"
+    assert audio.get_attribute("src") is None
+    assert page.evaluate("window.demoAudioCalls.play") == []
+    sound.dispatch_event("click")
+    # Use dispatch with the clock held to avoid waiting for animation-frame stability.
+    play.dispatch_event("click")
+    assert play.inner_text() == "Pause"
+    page.clock.run_for(SCENE_DELAY - 1)
+    assert_scene(page, group, "Sunset")
+    page.clock.run_for(1)
+    assert_scene(page, group, "After dinner")
+
+    before_pause = 1200
+    page.clock.run_for(before_pause)
+    play.dispatch_event("click")
+    assert play.inner_text() == "Resume"
+    page.clock.run_for(2 * SCENE_DELAY)
+    assert_scene(page, group, "After dinner")
+
+    play.dispatch_event("click")
+    assert play.inner_text() == "Pause"
+    page.clock.run_for(SCENE_DELAY - before_pause - 1)
+    assert_scene(page, group, "After dinner")
+    page.clock.run_for(1)
+    assert_scene(page, group, "TV time")
+    assert sound.get_attribute("aria-pressed") == "false"
+    assert audio.get_attribute("src") is None
+    assert page.evaluate("window.demoAudioCalls.play") == []
+
+    sound.dispatch_event("click")
+    assert sound.get_attribute("aria-pressed") == "true"
+    assert page.evaluate("window.demoAudioCalls.play") == [DEMO_AUDIO[0]]
+    pauses = page.evaluate("window.demoAudioCalls.pause")
+    sound.dispatch_event("click")
+    assert sound.get_attribute("aria-pressed") == "false"
+    assert page.evaluate("window.demoAudioCalls.pause") > pauses
+
+    for label in ("Kitchen break", "Late TV", "Bedtime", "Morning kitchen", "Morning note"):
+        page.clock.run_for(SCENE_DELAY)
+        assert_scene(page, group, label)
+    assert page.evaluate("window.demoAudioCalls.play") == [DEMO_AUDIO[0]]
+    assert play.inner_text() == "Replay"
+    assert progress.evaluate("progress => progress.value") == len(DEMO_SCENES)
+    assert page.locator("#sample-report").get_attribute("data-current") == "true"
+    page.clock.run_for(SCENE_DELAY)
+    assert_scene(page, group, "Morning note")
+
+    play.dispatch_event("click")
+    assert play.inner_text() == "Pause"
+    assert_scene(page, group, "Sunset")
+    assert progress.evaluate("progress => progress.value") == 1
+    assert page.locator("#sample-report").get_attribute("data-current") is None
+    group.get_by_role("button", name="Late TV").dispatch_event("click")
+    assert play.inner_text() == "Resume"
+    page.clock.run_for(2 * SCENE_DELAY)
+    assert_scene(page, group, "Late TV")
+    play.dispatch_event("click")
+    page.clock.run_for(SCENE_DELAY)
+    assert_scene(page, group, "Bedtime")
+
+    group.get_by_role("button", name="TV time").dispatch_event("click")
+    sound.dispatch_event("click")
+    assert sound.get_attribute("aria-pressed") == "true"
+    group.get_by_role("button", name="Kitchen break").dispatch_event("click")
+    group.get_by_role("button", name="Morning kitchen").dispatch_event("click")
+    assert page.evaluate("window.demoAudioCalls.play") == [DEMO_AUDIO[0], *DEMO_AUDIO]
+
+
 def check_browser():
     from playwright.sync_api import sync_playwright
 
@@ -134,12 +280,7 @@ def check_browser():
                     errors = []
                     page.on("pageerror", lambda error: errors.append(str(error)))
                     page.goto(url)
-                    page.get_by_role("link", name="Try the browser demo").click()
-                    scenes = page.get_by_role("group", name="Sample evening scenes")
-                    assert scenes.bounding_box()["y"] < height, width
-                    scenes.get_by_role("button", name="After dinner").click()
-                    assert page.locator("#scene-time").inner_text() == "8:10 PM"
-                    assert page.locator("#sample-report").is_visible()
+                    check_scene_selection(page, width, height)
                     page.get_by_role("link", name="Build on a Raspberry Pi").click()
                     pi = page.get_by_role("tab", name="Install on a Pi")
                     panel = page.get_by_role("tabpanel", name="Install on a Pi")
@@ -161,10 +302,17 @@ def check_browser():
                     assert panel.is_visible()
                     assert not errors, errors
                     context.close()
+                with browser.new_context() as context:
+                    page = context.new_page()
+                    errors = []
+                    page.on("pageerror", lambda error: errors.append(str(error)))
+                    check_demo_playback(page, url)
+                    assert not errors, errors
                 page = browser.new_context(java_script_enabled=False).new_page()
                 page.goto(f"{url}#setup-panel-pi")
                 for selector in ("#setup-panel-simulator", "#setup-panel-pi", "#sample-report"):
                     assert page.locator(selector).is_visible(), selector
+                assert page.locator("#sample-report-text").inner_text().strip(), "Static morning note is empty"
         finally:
             server.shutdown()
             thread.join()

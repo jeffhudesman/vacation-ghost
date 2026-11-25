@@ -67,24 +67,31 @@
           </dl>
         </div>
         <div class="routine-card" id="sample-evening" role="region" aria-labelledby="sample-evening-title">
-          <div class="routine-card-header"><span id="sample-evening-title">Browser demo</span><span class="sample-label">Sample evening</span></div>
-          <div class="routine-scene" data-scene="kitchen" aria-hidden="true">
-            <div class="scene-moon"></div>
-            <div class="scene-house">
-              <span class="scene-window scene-window-kitchen"></span>
-              <span class="scene-door"></span>
-              <span class="scene-window scene-window-living"></span>
-            </div>
-            <span class="scene-ground"></span>
+          <div class="routine-card-header"><span id="sample-evening-title">From the sidewalk</span><span class="sample-label">Sample trip</span></div>
+          <div class="routine-scene" data-scene="kitchen" data-lamp="kitchen" data-glow="none" data-period="evening" data-cue="none" aria-hidden="true">
+            <img class="scene-photo" src="assets/outside-view.webp" width="960" height="640" loading="lazy" alt="">
+            <span class="scene-window scene-window-kitchen"></span>
+            <span class="scene-window scene-window-living"></span>
+            <span class="scene-cue"><i class="scene-cue-waves"></i> Sound cue</span>
           </div>
           <div class="routine-card-body">
             <div class="routine-interactions" hidden>
-              <p class="routine-prompt">Choose a scene to see the lamps take turns. No setup required.</p>
+              <div class="routine-playback">
+                <button class="scene-play" id="scene-play" type="button">Play evening</button>
+                <button class="scene-sound" id="scene-sound" type="button" aria-pressed="false">Sound</button>
+              </div>
+              <progress class="scene-progress" id="scene-progress" value="1" max="8" aria-label="Evening progress"></progress>
               <div class="routine-steps" role="group" aria-label="Sample evening scenes">
                 <button type="button" data-scene-button="kitchen" aria-pressed="true">Sunset</button>
                 <button type="button" data-scene-button="living" aria-pressed="false">After dinner</button>
+                <button type="button" data-scene-button="tv" aria-pressed="false">TV time</button>
+                <button type="button" data-scene-button="break" aria-pressed="false">Kitchen break</button>
+                <button type="button" data-scene-button="drama" aria-pressed="false">Late TV</button>
                 <button type="button" data-scene-button="bedtime" aria-pressed="false">Bedtime</button>
+                <button type="button" data-scene-button="morning" aria-pressed="false">Morning kitchen</button>
+                <button type="button" data-scene-button="report" aria-pressed="false">Morning note</button>
               </div>
+              <audio id="scene-audio" preload="none"></audio>
             </div>
             <div class="scene-caption" aria-live="polite">
               <time id="scene-time" datetime="19:34">7:34 PM</time>
