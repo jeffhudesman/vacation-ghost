@@ -6,6 +6,8 @@ Vacation Ghost makes an empty house look lived-in while you’re away. A Raspber
 
 The first version takes manually entered trip dates. It uses no microphone or camera and collects no audio. The schedule and reports stay on the device. Other local applications can read the JSON reports.
 
+![Vacation Ghost concept demo showing lights changing over an evening in an empty house](docs/images/vacation-ghost-demo.gif)
+
 ## Try it without hardware
 
 On Linux with Python 3.11 or later, run these commands from the checkout. The simulator uses Python’s standard library and your system’s time-zone database.
