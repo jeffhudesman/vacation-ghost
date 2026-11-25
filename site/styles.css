@@ -215,6 +215,7 @@ h3 { font-size: 23px; line-height: 1.15; letter-spacing: -.035em; }
 .setup { padding-block: 71px; }
 .setup-heading { display: flex; justify-content: space-between; align-items: end; gap: 24px; margin-bottom: 33px; }
 .setup-heading h2 { max-width: 650px; }
+#setup:focus-visible { outline: none; }
 .setup-options { display: flex; flex-wrap: wrap; align-items: center; justify-content: end; gap: 10px 15px; min-width: 0; }
 .setup-options > a { margin-top: 0; color: var(--purple); font-size: 13px; font-weight: 800; text-underline-offset: 4px; }
 .setup-options > a:hover { text-decoration: underline; }
