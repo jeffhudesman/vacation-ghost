@@ -91,7 +91,7 @@ def check_source(page):
         elif url.startswith(f"{REPOSITORY}/blob/"):
             ref, path = parts.path.split("/blob/", 1)[1].split("/", 1)
             if ref == "main":
-                assert path in {"LICENSE", "CONTRIBUTING.md", "docs/service.md"}, url
+                assert path in {"LICENSE", "CONTRIBUTING.md"}, url
                 content = (ROOT / path).read_text(encoding="utf-8")
             else:
                 assert ref == revision, url
@@ -128,8 +128,7 @@ def check_simulator(page):
         assert example in report["message"], (example, report["message"])
         summary = json.loads(page.text["sample-report-json"])
         message = summary.pop("message")
-        excerpt = message.removesuffix(" …")
-        assert report["message"].startswith(excerpt) if excerpt != message else report["message"] == message
+        assert report["message"] == message, (message, report["message"])
         assert all(report[key] == value for key, value in summary.items()), (summary, report)
 
 
@@ -666,7 +665,7 @@ def main():
     print("Website links, assets, shell snippets, and pinned simulator output passed.")
     if args.browser:
         check_browser()
-        print("Browser checks at six widths and without JavaScript passed.")
+        print("Browser checks across seven viewport sizes and without JavaScript passed.")
 
 
 if __name__ == "__main__":
