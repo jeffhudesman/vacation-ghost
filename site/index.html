@@ -83,7 +83,7 @@
           </dl>
         </div>
         <div class="routine-card" id="sample-evening" role="region" aria-labelledby="sample-evening-title">
-          <div class="routine-card-header"><span id="sample-evening-title">From the sidewalk</span><span class="sample-label">Sample trip</span></div>
+          <div class="routine-card-header"><span id="sample-evening-title">From the sidewalk</span><span class="sample-label">Selected scenes</span></div>
           <div class="routine-scene" data-scene="kitchen" data-lamp="kitchen" data-glow="none" data-period="evening" data-cue="none" aria-hidden="true">
             <img class="scene-photo" src="assets/outside-view.webp" width="960" height="640" loading="lazy" alt="">
             <span class="scene-window scene-window-kitchen"></span>
@@ -96,7 +96,7 @@
                 <strong id="scene-name">Sunset</strong>
                 <time id="scene-time" datetime="19:34">7:34 PM</time>
               </p>
-              <p id="scene-text">The kitchen lamp switches on.</p>
+              <p id="scene-text">Near sunset, the kitchen lamp switches on.</p>
             </div>
             <div class="routine-interactions" hidden>
               <div class="routine-playback">
@@ -282,7 +282,7 @@ Sound: disabled</code></pre>
         </details>
         <details>
           <summary>Where do I find my morning note?</summary>
-          <p>The Pi saves a local JSON file at 8 AM in the trip’s time zone. Nothing is sent automatically. Look for the delivery date under <code>/var/lib/vacation-ghost/current/daily/</code>. The final trip summary is in <code>/var/lib/vacation-ghost/current/trip.json</code>.</p>
+          <p>The previous evening’s note is due at 8 AM in the trip’s time zone on mornings during the trip. If the Pi is offline then, it can write the note when it resumes. Reports stay on the Pi. Look for the delivery date under <code>/var/lib/vacation-ghost/current/daily/</code>. The final trip summary is in <code>/var/lib/vacation-ghost/current/trip.json</code>.</p>
           <p><a href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/service.md#read-reports-locally">Get the command to read a report on your Pi</a>.</p>
         </details>
         <details>

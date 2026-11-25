@@ -4,10 +4,12 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 from collections import Counter
+from configparser import ConfigParser
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from html.parser import HTMLParser
@@ -22,14 +24,14 @@ SITE = ROOT / "site"
 REPOSITORY = "https://github.com/jeffhudesman/vacation-ghost"
 RAW_REPOSITORY = "https://raw.githubusercontent.com/jeffhudesman/vacation-ghost"
 DEMO_SCENES = {
-    "Sunset": ("kitchen", "19:34", "kitchen", "none", "evening"),
-    "After dinner": ("living", "20:10", "living", "none", "evening"),
-    "TV time": ("tv", "20:18", "living", "sports", "evening"),
-    "Kitchen break": ("break", "21:38", "kitchen", "none", "evening"),
-    "Late TV": ("drama", "21:48", "living", "drama", "evening"),
-    "Bedtime": ("bedtime", "22:45", "none", "none", "evening"),
-    "Morning kitchen": ("morning", "07:18", "kitchen", "none", "dawn"),
-    "Morning note": ("report", "08:00", "none", "none", "dawn"),
+    "Sunset": ("kitchen", "evening", "lamp", "kitchen"),
+    "After dinner": ("living", "evening", "lamp", "living"),
+    "TV time": ("tv", "evening", "sound", "tv"),
+    "Kitchen break": ("break", "evening", "sound", "cabinet"),
+    "Late TV": ("drama", "evening", "glow", "drama"),
+    "Bedtime": ("bedtime", "evening", "lamp", ""),
+    "Morning kitchen": ("morning", "dawn", "sound", "kettle"),
+    "Morning note": ("report", "dawn", "report", ""),
 }
 DEMO_AUDIO = ("assets/demo-tv.mp3", "assets/demo-cabinet.mp3", "assets/demo-kettle.mp3")
 SCENE_DELAY = 3000
@@ -71,6 +73,22 @@ def git(*args):
     return subprocess.check_output(["git", "-C", ROOT, *args], text=True)
 
 
+def check_pi_setup(snippet, revision):
+    unit = ConfigParser(interpolation=None)
+    unit.read_string(git("show", f"{revision}:deploy/vacation-ghost.service"))
+    unit.read_string(git("show", f"{revision}:deploy/lights-only.conf"))
+    service = unit["Service"]
+    service_command = shlex.split(service["ExecStart"])
+    doctor_command = [
+        "sudo", "-u", service["User"], "-g", service["Group"],
+        *service_command[:service_command.index("run")], "doctor",
+    ]
+    lines = snippet.replace("\\\n", "").strip().splitlines()
+    assert [shlex.split(line) for line in lines] == [
+        ["("], ["set", "-eu"], ["cd", service["WorkingDirectory"]], doctor_command, [")"],
+    ], "Pi doctor command differs from the pinned lights-only service"
+
+
 def check_source(page):
     assert all(count == 1 for count in page.ids.values()), "Duplicate HTML IDs"
     revision = page.text["preview-commit"].strip()
@@ -109,6 +127,50 @@ def check_source(page):
     for name in ("setup-code-simulator", "setup-code-pi"):
         subprocess.run(["sh", "-n"], input=page.text[name], text=True, check=True)
     assert f"git checkout --quiet --detach {revision}\n" in page.text["setup-code-simulator"]
+    check_pi_setup(page.text["setup-code-pi"], revision)
+
+
+def sample_schedule(checkout, report):
+    # Run the actual pinned scheduler from the checkout created by the website command.
+    program = """
+import json
+import sys
+from datetime import date, datetime, time, timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from vacation_ghost.config import load_config
+from vacation_ghost.engine import Routine
+from vacation_ghost.reports import ReportStore, _clock_time
+
+config = load_config(Path("examples/vacation.example.toml"))
+routine = Routine(config)
+night, morning = map(date.fromisoformat, sys.argv[1:])
+note_time = datetime.combine(morning, time(8), tzinfo=config.timezone)
+
+with TemporaryDirectory() as directory:
+    state = Path(directory)
+    reports = ReportStore(state, config.start, config.end, dry_run=True)
+    note = state / "daily" / f"{morning}.json"
+    reports.publish_due(note_time - timedelta(seconds=1))
+    assert not note.exists()
+    reports.publish_due(note_time)
+    assert note.exists()
+
+def sample(at, kind, value):
+    lamp, glow, cue = routine.desired(at, at - timedelta(microseconds=1))
+    return [kind, value, at.strftime("%H:%M"), _clock_time(at), lamp or "none", glow or "none", cue or "none"]
+
+def samples(day):
+    return [sample(event.at, event.kind, event.value)
+            for event in routine.day(day).events if routine.active(event.at)]
+
+print(json.dumps({"evening": samples(night), "dawn": [*samples(morning), sample(note_time, "report", "")]}))
+"""
+    return json.loads(subprocess.check_output(
+        [sys.executable, "-c", program, report["night_of"], report["delivery_date"]],
+        cwd=checkout, text=True, timeout=15,
+    ))
 
 
 def check_simulator(page):
@@ -130,6 +192,8 @@ def check_simulator(page):
         message = summary.pop("message")
         assert report["message"] == message, (message, report["message"])
         assert all(report[key] == value for key, value in summary.items()), (summary, report)
+        checkout, = Path(temp).glob("*/vacation-ghost")
+        return sample_schedule(checkout, report)
 
 
 class SiteHandler(SimpleHTTPRequestHandler):
@@ -139,15 +203,25 @@ class SiteHandler(SimpleHTTPRequestHandler):
 
 def assert_scene(page, group, label):
     scene = page.locator(".routine-scene")
-    name, clock, lamp, glow, period = DEMO_SCENES[label]
-    for attribute, expected in (
-        ("data-scene", name), ("data-lamp", lamp), ("data-glow", glow), ("data-period", period),
-    ):
-        assert scene.get_attribute(attribute) == expected, (label, attribute)
-    assert page.locator("#scene-time").get_attribute("datetime") == clock, label
+    name, *_ = DEMO_SCENES[label]
+    assert scene.get_attribute("data-scene") == name, label
     assert page.locator("#scene-name").inner_text() == label
     assert group.locator('[aria-pressed="true"]').count() == 1, label
     assert group.get_by_role("button", name=label, exact=True).get_attribute("aria-pressed") == "true", label
+
+
+def assert_scheduled_state(page, label, schedule):
+    _, period, kind, value = DEMO_SCENES[label]
+    clock, clock_text, lamp, glow, cue = next(
+        state for event_kind, event_value, *state in schedule[period]
+        if (event_kind, event_value) == (kind, value)
+    )
+    scene = page.locator(".routine-scene")
+    for attribute, expected in (("lamp", lamp), ("glow", glow), ("period", period), ("cue", cue)):
+        assert scene.get_attribute(f"data-{attribute}") == expected, (label, attribute, expected)
+    scene_time = page.locator("#scene-time")
+    assert scene_time.get_attribute("datetime") == clock, label
+    assert scene_time.inner_text() == clock_text, label
 
 
 def assert_progress(progress, seconds, *, tolerance=0):
@@ -196,7 +270,7 @@ def assert_demo_ready(page):
     assert_read_note(page, False)
 
 
-def check_scene_selection(page, width, height):
+def check_scene_selection(page, width, height, schedule):
     page.get_by_role("link", name="Watch the 21-second demo", exact=True).click()
     assert_demo_ready(page)
     picker = page.locator(".routine-picker")
@@ -231,6 +305,7 @@ def check_scene_selection(page, width, height):
     for index, label in enumerate(DEMO_SCENES):
         group.get_by_role("button", name=label, exact=True).click()
         assert_scene(page, group, label)
+        assert_scheduled_state(page, label, schedule)
         assert_progress(progress, index * SCENE_SECONDS)
         assert_read_note(page, label == "Morning note")
         if label == "TV time":
@@ -573,7 +648,7 @@ def check_scene_picker_resize(page, url):
     page.wait_for_function(picker_open, arg=False)
 
 
-def check_browser():
+def check_browser(schedule):
     from playwright.sync_api import sync_playwright
 
     executable = shutil.which("chromium") or shutil.which("google-chrome")
@@ -599,7 +674,7 @@ def check_browser():
                     for name in ("Try the Linux simulator", "Build on a Raspberry Pi"):
                         target = hero.get_by_role("link", name=name)
                         assert target.bounding_box()["height"] >= 44, (width, name)
-                    check_scene_selection(page, width, height)
+                    check_scene_selection(page, width, height, schedule)
                     page.get_by_role("link", name="Build on a Raspberry Pi").click()
                     pi = page.get_by_role("tab", name="Install on a Pi")
                     assert page.evaluate("location.hash") == "#setup-panel-pi", width
@@ -646,7 +721,7 @@ def check_browser():
                 assert page.locator("#sample-report-text").inner_text().strip(), "Static morning note is empty"
                 assert page.locator(".routine-interactions").is_hidden()
                 assert page.locator(".routine-scene").get_attribute("data-scene") == "kitchen"
-                assert page.locator(".routine-scene").get_attribute("data-lamp") == "kitchen"
+                assert_scheduled_state(page, "Sunset", schedule)
                 assert_window_lamps(page, 1, 0)
                 assert_read_note(page, False)
         finally:
@@ -661,10 +736,10 @@ def main():
     page = PageSource()
     page.feed((SITE / "index.html").read_text(encoding="utf-8"))
     check_source(page)
-    check_simulator(page)
+    schedule = check_simulator(page)
     print("Website links, assets, shell snippets, and pinned simulator output passed.")
     if args.browser:
-        check_browser()
+        check_browser(schedule)
         print("Browser checks across seven viewport sizes and without JavaScript passed.")
 
 
