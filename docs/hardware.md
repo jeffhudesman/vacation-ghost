@@ -15,6 +15,8 @@ Start with two switched lamps. The LED strip adds TV glow, and USB audio adds ho
 
 For a lights-only build, set up the Pi and two plugs and reuse your lamps and router. Once the plugs are on the local network, follow the [Pi setup guide](service.md#lights-only-quick-start).
 
+Before buying plugs, check that your models support the [local controls listed below](#hardware-compatibility), power-restore off, and a built-in auto-off timer. Check that you can [restrict access to the plugs](#restrict-plug-access) on your network. To test a lamp you already own, leave its switch in the on position, disconnect it from power, and confirm that it lights when you reconnect it.
+
 ## Restrict plug access
 
 Use two plugs configured for unauthenticated local RPC. Put them on a trusted or separate IoT segment and restrict access with a firewall or VLAN ACL so only the Pi and trusted administrators can reach them. Apply the rule to traffic between clients as well as traffic between networks. Keep port forwarding and UPnP off. Disable the vendor cloud for local-only operation.

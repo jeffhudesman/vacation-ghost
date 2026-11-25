@@ -1,27 +1,29 @@
 const demoScenes = [
-  { name: "kitchen", time: "19:34", label: "7:34 PM", lamp: "kitchen", text: "The kitchen lamp switches on." },
-  { name: "living", time: "20:10", label: "8:10 PM", lamp: "living", text: "The kitchen goes dark and the living room lamp switches on." },
-  { name: "tv", time: "20:18", label: "8:18 PM", lamp: "living", glow: "sports", cue: "tv",
-    text: "The living room window picks up a quicker TV glow, with a short, muffled TV cue if sound is on." },
-  { name: "break", time: "21:38", label: "9:38 PM", lamp: "kitchen", cue: "cabinet",
+  { name: "kitchen", title: "Sunset", time: "19:34", label: "7:34 PM", lamp: "kitchen", text: "The kitchen lamp switches on." },
+  { name: "living", title: "After dinner", time: "20:10", label: "8:10 PM", lamp: "living", text: "The kitchen goes dark and the living room lamp switches on." },
+  { name: "tv", title: "TV time", time: "20:18", label: "8:18 PM", lamp: "living", glow: "sports", cue: "tv",
+    text: "The living room lamp stays on. Optional effects add a quicker TV glow and a muffled TV sound." },
+  { name: "break", title: "Kitchen break", time: "21:38", label: "9:38 PM", lamp: "kitchen", cue: "cabinet",
     text: "The TV glow fades and the kitchen lamp comes back on, with an optional cabinet sound." },
-  { name: "drama", time: "21:48", label: "9:48 PM", lamp: "living", glow: "drama",
-    text: "The living room lamp comes back on, with a slower TV glow this time." },
-  { name: "bedtime", time: "22:45", label: "10:45 PM", text: "The last lamp switches off." },
-  { name: "morning", time: "07:18", label: "7:18 AM", lamp: "kitchen", period: "dawn", cue: "kettle",
+  { name: "drama", title: "Late TV", time: "21:48", label: "9:48 PM", lamp: "living", glow: "drama",
+    text: "The living room lamp comes back on, with an optional slower TV glow." },
+  { name: "bedtime", title: "Bedtime", time: "22:45", label: "10:45 PM", text: "The last lamp switches off." },
+  { name: "morning", title: "Morning kitchen", time: "07:18", label: "7:18 AM", lamp: "kitchen", period: "dawn", cue: "kettle",
     text: "The kitchen lamp comes on briefly after dawn, with an optional kettle cue." },
-  { name: "report", time: "08:00", label: "8:00 AM", period: "dawn",
+  { name: "report", title: "Morning note", time: "08:00", label: "8:00 AM", period: "dawn",
     text: "The Pi saves the morning note." },
 ];
 
 function setupEveningDemo() {
   const card = document.querySelector(".routine-card");
   const playButton = card?.querySelector("#scene-play");
+  const restartButton = card?.querySelector("#scene-restart");
   const soundButton = card?.querySelector("#scene-sound");
   const audio = card?.querySelector("#scene-audio");
-  if (!playButton || !soundButton || !audio) return;
+  if (!playButton || !restartButton || !soundButton || !audio) return;
 
   const scene = card.querySelector(".routine-scene");
+  const sceneName = card.querySelector("#scene-name");
   const sceneTime = card.querySelector("#scene-time");
   const sceneText = card.querySelector("#scene-text");
   const soundState = card.querySelector("#scene-sound-state");
@@ -32,8 +34,7 @@ function setupEveningDemo() {
   const sceneDuration = 3000;
   const lastScene = demoScenes.length - 1;
   progress.max = lastScene * sceneDuration / 1000;
-  const playLabels = { ready: "Play demo", playing: "Pause", paused: "Resume", finished: "Replay" };
-  let sceneIndex = 0;
+  let sceneIndex = null;
   let playState = "ready";
   let timer;
   let progressFrame;
@@ -43,7 +44,7 @@ function setupEveningDemo() {
 
   function updateProgress(timeLeft = sceneDuration) {
     const elapsed = sceneDuration - Math.min(sceneDuration, Math.max(0, timeLeft));
-    progress.value = (sceneIndex * sceneDuration + elapsed) / 1000;
+    progress.value = ((sceneIndex ?? 0) * sceneDuration + elapsed) / 1000;
   }
 
   function animateProgress(now) {
@@ -53,14 +54,22 @@ function setupEveningDemo() {
 
   function setPlayback(state) {
     playState = state;
+    const playLabels = {
+      ready: sceneIndex === null ? "Play demo" : "Play from here",
+      playing: "Pause",
+      paused: "Resume",
+      finished: "Complete",
+    };
     playButton.textContent = playLabels[state];
-    readNote.hidden = state !== "finished";
+    const finished = state === "finished";
+    playButton.setAttribute("aria-disabled", String(finished));
+    readNote.hidden = !finished;
+    cancelAnimationFrame(progressFrame);
     if (state === "playing") {
       card.dataset.playing = "true";
       progressFrame = requestAnimationFrame(animateProgress);
     } else {
       delete card.dataset.playing;
-      cancelAnimationFrame(progressFrame);
     }
   }
 
@@ -79,7 +88,7 @@ function setupEveningDemo() {
     stopAudio();
   }
 
-  function playCue(cue = demoScenes[sceneIndex].cue) {
+  function playCue(cue = demoScenes[sceneIndex]?.cue) {
     stopAudio();
     if (!soundEnabled || !cue) return;
     const source = `assets/demo-${cue}.mp3`;
@@ -90,10 +99,11 @@ function setupEveningDemo() {
   }
 
   function showScene(index = null) {
-    sceneIndex = index ?? 0;
-    const setting = index === null ? { name: "ready", text: "Both lamps are off at dusk." } : demoScenes[index];
-    const { name, time, label, text, lamp = "none", glow = "none", period = "evening", cue } = setting;
+    sceneIndex = index;
+    const setting = demoScenes[index] ?? { name: "ready", title: "Dusk", text: "Both lamps are off at dusk." };
+    const { name, title, time, label, text, lamp = "none", glow = "none", period = "evening", cue } = setting;
     Object.assign(scene.dataset, { scene: name, lamp, glow, period, cue: cue ?? "none" });
+    sceneName.textContent = title;
     sceneTime.hidden = !time;
     if (time) {
       sceneTime.dateTime = time;
@@ -123,12 +133,17 @@ function setupEveningDemo() {
       pausePlayback();
       return;
     }
-    if (playState === "paused") {
-      playCue();
-    } else {
-      remaining = sceneDuration;
-      showScene(0);
-    }
+    if (playState === "finished") return;
+    if (sceneIndex === null) showScene(0);
+    else playCue();
+    advanceAfter(remaining);
+    setPlayback("playing");
+  });
+
+  restartButton.addEventListener("click", () => {
+    clearTimeout(timer);
+    remaining = sceneDuration;
+    showScene(0);
     advanceAfter(remaining);
     setPlayback("playing");
   });
@@ -146,10 +161,10 @@ function setupEveningDemo() {
     button.addEventListener("click", () => {
       clearTimeout(timer);
       remaining = sceneDuration;
+      showScene(index);
       if (index === lastScene) setPlayback("finished");
       else if (playState === "playing" || playState === "paused") setPlayback("paused");
       else setPlayback("ready");
-      showScene(index);
     });
   }
 
@@ -204,7 +219,7 @@ function reachSetupHeading() {
   setupHeading.scrollIntoView();
 }
 
-function selectTabFromHash(restoreScroll = false) {
+function selectTabFromHash(restoreScroll = false, initialLoad = false) {
   const returnTo = window.history.state?.reportReturn;
   const savedTab = tabs.find((tab) => tab.id === returnTo?.tab);
   if (restoreScroll && savedTab && Number.isFinite(returnTo.top)) {
@@ -213,10 +228,18 @@ function selectTabFromHash(restoreScroll = false) {
     return;
   }
 
-  const index = panels.findIndex((panel) => `#${panel.id}` === window.location.hash);
+  const hash = window.location.hash;
+  const index = panels.findIndex((panel) => `#${panel.id}` === hash);
   if (index === -1) return;
   selectTab(tabs[index]);
-  requestAnimationFrame(reachSetupHeading);
+  if (initialLoad) {
+    // Let the browser finish its initial fragment and reload scroll restoration.
+    window.addEventListener("pageshow", () => {
+      if (window.location.hash === hash) requestAnimationFrame(reachSetupHeading);
+    }, { once: true });
+  } else {
+    requestAnimationFrame(reachSetupHeading);
+  }
 }
 
 function followsHere(event) {
@@ -265,7 +288,7 @@ for (const link of document.querySelectorAll('a[href="#sample-report"]')) {
 
 setupTabs.hidden = false;
 selectTab(tabs[0]);
-selectTabFromHash();
+selectTabFromHash(false, true);
 window.addEventListener("hashchange", (event) => selectTabFromHash(new URL(event.oldURL).hash === "#sample-report"));
 
 const feedback = document.getElementById("copy-feedback");

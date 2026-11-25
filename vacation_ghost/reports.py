@@ -484,7 +484,7 @@ class ReportStore:
             "schedule_note": note,
             **metrics,
             **faults,
-            "message": self._prefix + message + " Sound detection was off." + _fault_message(faults),
+            "message": self._prefix + message + _fault_message(faults),
         })
 
     def _write_trip_report(self, now: datetime) -> None:
@@ -512,7 +512,7 @@ class ReportStore:
             **faults,
             "ended_early": early,
             "nights_with_lamp_activity": nights,
-            "message": f"{self._prefix}{outcome} {activity} Sound detection was off." + _fault_message(faults),
+            "message": f"{self._prefix}{outcome} {activity}" + _fault_message(faults),
         })
 
     def publish_due(self, now: datetime) -> None:

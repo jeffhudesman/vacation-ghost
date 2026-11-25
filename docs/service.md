@@ -4,12 +4,17 @@ The service runs on the Pi, resumes the configured trip after a reboot, and atte
 
 ## Lights-only quick start
 
-1. Flash a current Raspberry Pi OS image, boot the Pi, and sign in to a shell with sudo access. Set up the [two plugs and their safeguards](hardware.md#restrict-plug-access).
-2. [Install the verified preview source](#install-from-a-verified-release). Edit the private config with the two plug addresses and a future start time.
-3. [Set up the lights-only service account](#use-the-lights-only-profile).
-4. [Run the read-only checks and rehearse](#check-and-start). Start the unit and confirm a fresh status before enabling it at boot.
+You’ll need a Pi running Raspberry Pi OS, a terminal with `sudo` access, two [compatible plugs](hardware.md#hardware-compatibility), and the ability to restrict access to the plugs on your local network. Use two lamps that turn on when power returns. If you already have an installation, see [how to upgrade or change profiles](#upgrade-or-switch-profiles) first.
 
-## Install from a verified release
+1. [Prepare the Pi and plugs](#prepare-the-pi-and-plugs).
+2. [Install from a verified release](#install-from-a-verified-release) and [set the trip and plug addresses](#set-the-trip-and-plug-addresses).
+3. [Set up the lights-only service account](#use-the-lights-only-profile).
+4. [Check both plugs, rehearse, and start the service](#check-and-start).
+5. [Verify the setup while home](#verify-the-setup-while-home).
+
+### Prepare the Pi and plugs
+
+Flash a current Raspberry Pi OS image, boot the Pi, and sign in to a shell. Set up the [network access and plug safeguards](hardware.md#restrict-plug-access), including a reserved address, power-restore off, and a built-in auto-off timer for each plug.
 
 On the Pi, install Git, Python’s virtual-environment tools, the system time-zone database, and HTTPS certificates from the signed Raspberry Pi OS repositories. Use Python 3.11 or later.
 
@@ -22,10 +27,14 @@ timedatectl status
 
 The Pi needs a trustworthy clock after power loss. Use a battery-backed clock or configure your time synchronization provider and its boot wait service. The unit orders startup after `time-sync.target`. Verify that the clock synchronizes after power returns.
 
-Open the published [v0.1.0-preview.1 GitHub prerelease](https://github.com/jeffhudesman/vacation-ghost/releases/tag/v0.1.0-preview.1) and copy the full source commit SHA from its release notes. If the tag is signed, verify it with the trusted maintainer key. The clone step checks that the named tag points at the published commit and archives that Git object for installation. Run the installer blocks in the same shell. Prepare an existing installation before upgrading or changing profiles. [Upgrade and profile changes](#upgrade-or-switch-profiles)
+Before continuing, confirm the reported Python version and the Pi’s clock. Test each plug’s power-restore and auto-off settings independently of the Pi.
+
+### Install from a verified release
+
+Open the [v0.1.0-preview.2 GitHub prerelease](https://github.com/jeffhudesman/vacation-ghost/releases/tag/v0.1.0-preview.2) and replace `REPLACE_WITH_FULL_SHA_FROM_RELEASE_NOTES` below with the full source commit ID shown there. If the tag is signed, verify it with the trusted maintainer key. The first block checks that the tag points at the published commit and stages that source for installation. Run both blocks in the same shell.
 
 ```sh
-release_tag=v0.1.0-preview.1
+release_tag=v0.1.0-preview.2
 release_commit=REPLACE_WITH_FULL_SHA_FROM_RELEASE_NOTES
 source_dir=$(mktemp -d /tmp/vacation-ghost-source.XXXXXX)
 release_dir=$(mktemp -d /tmp/vacation-ghost-release.XXXXXX)
@@ -43,10 +52,11 @@ release_dir=$(mktemp -d /tmp/vacation-ghost-release.XXXXXX)
   git --no-replace-objects archive --format=tar "$resolved_commit" > "$release_dir/source.tar"
   tar -xf "$release_dir/source.tar" -C "$release_dir"
   printf '%s\n' "$resolved_commit" > "$release_dir/.verified"
+  printf 'Verified release commit: %s\n' "$resolved_commit"
 )
 ```
 
-The next block installs the app from the staged release and opens its private configuration in your editor.
+Check that `Verified release commit` shows the same full commit ID as the release notes. The next block installs the app from the staged release and opens its private configuration in your editor.
 
 ```sh
 (
@@ -72,6 +82,8 @@ The next block installs the app from the staged release and opens its private co
 )
 ```
 
+### Set the trip and plug addresses
+
 Replace the fictional dates in `/etc/vacation-ghost/vacation.toml`. Give each timestamp the UTC offset for that date in your named time zone. For example, a 9 AM summer departure in New York and a later return could use these settings.
 
 ```toml
@@ -85,48 +97,9 @@ A timestamp ending in `Z` is UTC even if you change `timezone`. Set a future dep
 
 In `[hardware.plugs]`, match the keys to the two names in `routine.rooms` and give each a different plug. Use a private IPv4 address such as `http://192.168.1.20` or bracket a unique-local IPv6 address in a URL such as `http://[fd00::20]`. Keep glow and sound disabled for the first install. The Pi contacts the plugs only over the restricted LAN. Keep real trip settings and plug addresses in the private Pi config or an ignored `.local/` directory during development. [Lights-only example](../examples/vacation.lights-only.toml)
 
-## Optional TV glow and sound
+Before saving, confirm both addresses are distinct, the departure is in the future, and `led_count` and `volume` are both `0`.
 
-For glow, edit the existing `[hardware]` section. Set `led_count` to the number of connected pixels and use `led_pin = 18` for BCM GPIO18 on physical header pin 12. The supported profile uses PWM channel 0 and an 800 kHz GRB strip. The base service runs as root for PWM/DMA access. If your OS offers a compatible distribution-signed driver package, install it through the OS package manager and run `sudo /usr/bin/python3 -I -m venv --system-site-packages /opt/vacation-ghost/.venv` so the service can load it. [Wiring guide](hardware.md#wire-the-optional-led-strip)
-
-At the pinned release, [PyPI lists `rpi-ws281x` 5.0.0 as a source distribution](https://pypi.org/project/rpi-ws281x/5.0.0/#files). Build its wheel as an ordinary user on the target Pi and OS. The [checked-in requirements file](../deploy/rpi-ws281x-source.txt) pins the upstream source URL and digest. These instructions use compiler and Python build tools from signed OS repositories.
-
-```sh
-sudo apt-get install -y build-essential python3-dev python3-setuptools python3-wheel
-build_dir=$(mktemp -d /tmp/vacation-ghost-driver.XXXXXX)
-python3 -m venv --system-site-packages "$build_dir/venv"
-PYTHONNOUSERSITE=1 PYTHONPATH= CC=gcc CXX=g++ "$build_dir/venv/bin/python" -I -m pip --isolated wheel --no-index --no-deps \
-  --no-build-isolation --require-hashes --wheel-dir "$build_dir/wheels" \
-  -r /opt/vacation-ghost/deploy/rpi-ws281x-source.txt
-```
-
-Once the build succeeds, stage the locally built wheel and install it offline. The wheel digest depends on trust in the local build account and tools. If using a compatible prebuilt upstream wheel from a reviewed release, check its Python ABI and architecture tags, place it in a fresh `$build_dir/wheels` directory, and set `upstream_wheel_digest` to the SHA-256 of that exact file from the release's PyPI metadata. An installer check confirms the file and Python ABI. A [physical rehearsal](hardware.md#physical-release-checklist) confirms GPIO, PWM/DMA, and wiring compatibility.
-
-```sh
-(
-  set -eu
-  wheel=$(printf '%s\n' "$build_dir"/wheels/rpi_ws281x-*.whl)
-  wheel_name=${wheel##*/}
-  wheel_digest=$(sha256sum "$wheel")
-  wheel_digest=${wheel_digest%% *}
-  [ "$wheel_digest" = "${upstream_wheel_digest:-$wheel_digest}" ]
-  printf 'rpi-ws281x @ file:///opt/vacation-ghost/wheels/%s --hash=sha256:%s\n' \
-    "$wheel_name" "$wheel_digest" > "$build_dir/wheel-lock.txt"
-  sudo install -d -o root -g root -m 0755 /opt/vacation-ghost/wheels
-  sudo install -o root -g root -m 0644 "$wheel" "$build_dir/wheel-lock.txt" /opt/vacation-ghost/wheels/
-  sudo /opt/vacation-ghost/.venv/bin/python -I -m pip --isolated install --no-index --no-deps \
-    --only-binary=:all: --require-hashes --force-reinstall -r /opt/vacation-ghost/wheels/wheel-lock.txt
-)
-```
-
-For sound, add `sounds_dir = "/opt/vacation-ghost/sounds"` under `[hardware]` and set `volume` to a low nonzero value, such as `0.05`. Install ALSA tools and use `aplay -l` to identify the USB audio adapter. Set its ALSA default in a system-visible configuration such as `/etc/asound.conf`. The unit’s `ProtectHome=true` hides per-user files such as `/root/.asoundrc`. Generate the cues at the configured path using the staged program.
-
-```sh
-sudo apt-get install -y alsa-utils
-sudo /opt/vacation-ghost/.venv/bin/python -I /opt/vacation-ghost/tools/generate_sounds.py /opt/vacation-ghost/sounds
-```
-
-## Use the lights-only profile
+### Use the lights-only profile
 
 For two-plug installations with both optional outputs disabled, install the drop-in that runs the service as a dedicated account without capabilities or direct device access. Use the same account for manual hardware commands. The commands below assume a fresh deployment. [Upgrade and profile changes](#upgrade-or-switch-profiles)
 
@@ -150,7 +123,9 @@ For two-plug installations with both optional outputs disabled, install the drop
 )
 ```
 
-## Check and start
+The permission checks in this block complete silently when the service account can read the config and write to the state directory.
+
+### Check and start
 
 Run the checks from the root-owned install. These commands use the lights-only `vacation-ghost` account. If you set up the base service for optional hardware, set `service_user=root` in the check, start, disarm, and recovery commands. `doctor` reads the relay state and device identity from each plug and checks that you configured two distinct devices. It checks for the optional driver and cue files when enabled. `rehearse` ignores trip dates and briefly drives the connected outputs. Run it when you are home, with the scheduled service stopped and using separate state.
 
@@ -168,7 +143,9 @@ Run the checks from the root-owned install. These commands use the lights-only `
 )
 ```
 
-Install the unit from the verified release after rehearsal succeeds. Keep the configured trip start in the future for this first check. The commands verify the unit, start it, and wait for a fresh idle status with no device faults or unconfirmed shutdown. Successful process startup alone does not mean the app loaded its configuration.
+For lights only, `doctor` should show the current state of both plugs, with TV glow and sound listed as disabled. Watch the rehearsal to confirm the lamps take turns and both turn off at the end.
+
+Install the unit from the verified release after rehearsal succeeds. Keep the configured trip start in the future for this first check. The commands verify the unit, start it, and wait for a fresh idle status with no device faults or unconfirmed shutdown. Look for `Vacation Ghost is idle and waiting for departure` before the unit is enabled at boot.
 
 ```sh
 (
@@ -240,7 +217,9 @@ PY
 
 If the check fails, read `sudo journalctl -u vacation-ghost.service -n 40 --no-pager` and check the current status before trying again. The unit uses `/var/lib/vacation-ghost/current` for trip state and `/var/lib/vacation-ghost/device` for its device reservation. Preserve both across restarts. A scheduled end sets `completed`, and an early stop requested with `disarm` sets `disarmed`. Both prevent that trip from starting again after reboot. A true `shutdown_unconfirmed` means the controller has yet to confirm that all required outputs are off. Inspect the lamps and use the recovery procedure when needed. [Stop or recover](#stop-recover-or-change-trips)
 
-If you enabled glow or sound, also run a short scheduled test trip under the actual systemd unit. Choose a window that includes the evening glow and at least one sound cue. Observe the outputs and check `latest.json` and the unit journal for faults. The foreground rehearsal uses the same account, and the systemd test exercises the unit’s filesystem and device settings. Disarm and verify shutdown before [preparing the real trip](#stop-recover-or-change-trips). [Physical checklist](hardware.md#physical-release-checklist)
+### Verify the setup while home
+
+Complete the [physical release checklist](hardware.md#physical-release-checklist) with your Pi, Raspberry Pi OS image, and plug models and firmware. Run a short scheduled trip and check that the clock and routine recover after a reboot, the plug timers turn the lamps off when the Pi loses power or network access, and both lamps switch off when the trip ends. Compare what you observed with the [local reports](#read-reports-locally). The checklist includes separate tests for scheduled and early shutdown.
 
 ## Stop, recover, or change trips
 
@@ -313,9 +292,54 @@ To switch to lights-only, set `led_count = 0` and `volume = 0` in `/etc/vacation
 )
 ```
 
+## Optional TV glow and sound
+
+For a first build, start with the [lights-only hardware checks](#verify-the-setup-while-home). To add glow or sound to a lights-only installation, follow the [profile change procedure](#upgrade-or-switch-profiles) to switch to the base service. For a fresh base installation, [prepare the Pi](#prepare-the-pi-and-plugs), [install the release](#install-from-a-verified-release), and [set the trip and plug addresses](#set-the-trip-and-plug-addresses) before configuring the optional outputs below. The base service uses the root account.
+
+For glow, edit the existing `[hardware]` section. Set `led_count` to the number of connected pixels and use `led_pin = 18` for BCM GPIO18 on physical header pin 12. The supported profile uses PWM channel 0 and an 800 kHz GRB strip. The base service runs as root for PWM/DMA access. If your OS offers a compatible distribution-signed driver package, install it through the OS package manager and run `sudo /usr/bin/python3 -I -m venv --system-site-packages /opt/vacation-ghost/.venv` so the service can load it. [Wiring guide](hardware.md#wire-the-optional-led-strip)
+
+At the pinned release, [PyPI lists `rpi-ws281x` 5.0.0 as a source distribution](https://pypi.org/project/rpi-ws281x/5.0.0/#files). Build its wheel as an ordinary user on the target Pi and OS. The [checked-in requirements file](../deploy/rpi-ws281x-source.txt) pins the upstream source URL and digest. These instructions use compiler and Python build tools from signed OS repositories.
+
+```sh
+sudo apt-get install -y build-essential python3-dev python3-setuptools python3-wheel
+build_dir=$(mktemp -d /tmp/vacation-ghost-driver.XXXXXX)
+python3 -m venv --system-site-packages "$build_dir/venv"
+PYTHONNOUSERSITE=1 PYTHONPATH= CC=gcc CXX=g++ "$build_dir/venv/bin/python" -I -m pip --isolated wheel --no-index --no-deps \
+  --no-build-isolation --require-hashes --wheel-dir "$build_dir/wheels" \
+  -r /opt/vacation-ghost/deploy/rpi-ws281x-source.txt
+```
+
+Once the build succeeds, stage the locally built wheel and install it offline. The wheel digest depends on trust in the local build account and tools. If using a compatible prebuilt upstream wheel from a reviewed release, check its Python ABI and architecture tags, place it in a fresh `$build_dir/wheels` directory, and set `upstream_wheel_digest` to the SHA-256 of that exact file from the release's PyPI metadata. An installer check confirms the file and Python ABI. A [physical rehearsal](hardware.md#physical-release-checklist) confirms GPIO, PWM/DMA, and wiring compatibility.
+
+```sh
+(
+  set -eu
+  wheel=$(printf '%s\n' "$build_dir"/wheels/rpi_ws281x-*.whl)
+  wheel_name=${wheel##*/}
+  wheel_digest=$(sha256sum "$wheel")
+  wheel_digest=${wheel_digest%% *}
+  [ "$wheel_digest" = "${upstream_wheel_digest:-$wheel_digest}" ]
+  printf 'rpi-ws281x @ file:///opt/vacation-ghost/wheels/%s --hash=sha256:%s\n' \
+    "$wheel_name" "$wheel_digest" > "$build_dir/wheel-lock.txt"
+  sudo install -d -o root -g root -m 0755 /opt/vacation-ghost/wheels
+  sudo install -o root -g root -m 0644 "$wheel" "$build_dir/wheel-lock.txt" /opt/vacation-ghost/wheels/
+  sudo /opt/vacation-ghost/.venv/bin/python -I -m pip --isolated install --no-index --no-deps \
+    --only-binary=:all: --require-hashes --force-reinstall -r /opt/vacation-ghost/wheels/wheel-lock.txt
+)
+```
+
+For sound, add `sounds_dir = "/opt/vacation-ghost/sounds"` under `[hardware]` and set `volume` to a low nonzero value, such as `0.05`. Install ALSA tools and use `aplay -l` to identify the USB audio adapter. Set its ALSA default in a system-visible configuration such as `/etc/asound.conf`. The unit’s `ProtectHome=true` hides per-user files such as `/root/.asoundrc`. Generate the cues at the configured path using the staged program.
+
+```sh
+sudo apt-get install -y alsa-utils
+sudo /opt/vacation-ghost/.venv/bin/python -I /opt/vacation-ghost/tools/generate_sounds.py /opt/vacation-ghost/sounds
+```
+
+Follow [Check and start](#check-and-start) with `service_user=root`, then run a short scheduled test trip under the systemd unit. Choose a window with the glow or sound cues you enabled. Observe the outputs and check `latest.json` and the unit journal for faults. The foreground rehearsal uses the same account, and the systemd test exercises the unit’s filesystem and device settings. Disarm and verify shutdown before [preparing the real trip](#stop-recover-or-change-trips). [Physical checklist](hardware.md#physical-release-checklist)
+
 ## Read reports locally
 
-The morning note is due at 8 AM in the trip’s time zone on mornings during the trip. It is saved as `/var/lib/vacation-ghost/current/daily/YYYY-MM-DD.json`, where `YYYY-MM-DD` is the delivery date. Replace this sample date with the note you want to read. Use `root` for the user and group if running the base service.
+The Pi saves the previous evening’s note at 8 AM in the trip’s time zone on mornings during the trip. It writes a local JSON file at `/var/lib/vacation-ghost/current/daily/YYYY-MM-DD.json`, where `YYYY-MM-DD` is the delivery date. Replace this sample date with the note you want to read. Use `root` for the user and group if running the base service. Read the `message` field for the summary.
 
 ```sh
 delivery_date=2030-06-11
