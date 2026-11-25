@@ -142,8 +142,25 @@ def assert_scene(page, group, label):
 
 
 def check_scene_selection(page, width, height):
-    page.get_by_role("link", name="Try the browser demo").click()
-    group = page.get_by_role("group", name="Sample evening scenes")
+    page.get_by_role("link", name="See the 21-second demo", exact=True).click()
+    picker = page.locator(".routine-picker")
+    assert picker.locator("summary").inner_text() == "Jump to a scene", width
+    assert picker.evaluate("picker => picker.open") == (width > 480), width
+    play = page.get_by_role("button", name="Play demo", exact=True)
+    initial = play.bounding_box()
+    assert initial is not None and 0 <= initial["y"] < height, width
+    x, y = initial["x"] + initial["width"] / 2, initial["y"] + initial["height"] / 2
+    page.mouse.click(x, y)
+    playing = page.get_by_role("button", name="Pause", exact=True)
+    assert playing.bounding_box() == initial, width
+    page.mouse.click(x, y)
+    paused = page.get_by_role("button", name="Resume", exact=True)
+    assert paused.bounding_box() == initial, width
+
+    if width <= 480:
+        picker.locator("summary").click()
+        assert picker.evaluate("picker => picker.open"), width
+    group = page.get_by_role("group", name="Sample scenes")
     assert group.bounding_box()["y"] < height, width
     assert page.locator("#scene-sound").get_attribute("aria-pressed") == "false", width
     assert page.locator("#scene-audio").get_attribute("src") is None, width
@@ -162,6 +179,21 @@ def check_scene_selection(page, width, height):
         box = control.bounding_box()
         assert box is not None, (width, control)
         assert card["x"] <= box["x"] <= box["x"] + box["width"] <= card["x"] + card["width"], (width, control)
+    next_link = page.locator(".routine-card").get_by_role("link", name="See what you need", exact=True)
+    assert next_link.get_attribute("href") == "#parts", width
+    note = page.locator("#sample-report").bounding_box()
+    assert next_link.bounding_box()["y"] >= note["y"] + note["height"], width
+    next_link.click()
+    assert page.evaluate("location.hash") == "#parts", width
+
+
+def open_clocked_demo(page, url):
+    page.bring_to_front()
+    start = datetime(2030, 6, 10, tzinfo=UTC)
+    page.clock.install(time=start)
+    page.clock.pause_at(start + timedelta(minutes=1))
+    page.goto(url)
+    page.locator(".routine-card").evaluate("card => card.scrollIntoView({ block: 'start', behavior: 'instant' })")
 
 
 def check_demo_playback(page, url):
@@ -178,17 +210,14 @@ def check_demo_playback(page, url):
             return Promise.resolve();
         };
     """)
-    start = datetime(2030, 6, 10, tzinfo=UTC)
-    page.clock.install(time=start)
-    page.clock.pause_at(start + timedelta(minutes=1))
-    page.goto(url)
-    group = page.get_by_role("group", name="Sample evening scenes")
+    open_clocked_demo(page, url)
+    group = page.get_by_role("group", name="Sample scenes")
     play = page.locator("#scene-play")
     sound = page.locator("#scene-sound")
     audio = page.locator("#scene-audio")
     progress = page.locator("#scene-progress")
 
-    assert play.inner_text() == "Play evening"
+    assert play.inner_text() == "Play demo"
     assert progress.evaluate("progress => progress.value") == 1
     assert progress.evaluate("progress => progress.max") == len(DEMO_SCENES)
     sound.dispatch_event("click")
@@ -260,6 +289,112 @@ def check_demo_playback(page, url):
     assert page.evaluate("window.demoAudioCalls.play") == [DEMO_AUDIO[0], *DEMO_AUDIO]
 
 
+def check_demo_auto_pause(page, url):
+    from playwright.sync_api import expect
+
+    open_clocked_demo(page, url)
+    card = page.locator(".routine-card")
+    group = page.get_by_role("group", name="Sample scenes")
+    play = page.locator("#scene-play")
+    # Wait for a rendered onscreen entry before exercising the transition offscreen.
+    card.evaluate("""card => {
+        new IntersectionObserver(([entry]) => {
+            card.dataset.testIntersecting = String(entry.isIntersecting);
+        }).observe(card);
+    }""")
+    expect(card).to_have_attribute("data-test-intersecting", "true", timeout=3000)
+    play.dispatch_event("click")
+    page.clock.run_for(1200)
+
+    page.locator("#setup").evaluate("heading => heading.scrollIntoView({ block: 'start', behavior: 'instant' })")
+    assert card.evaluate("card => card.getBoundingClientRect().bottom <= 0")
+    expect(card).to_have_attribute("data-test-intersecting", "false", timeout=3000)
+    expect(play).to_have_text("Resume", timeout=3000)
+    page.clock.run_for(2 * SCENE_DELAY)
+    assert_scene(page, group, "Sunset")
+
+    card.evaluate("card => card.scrollIntoView({ block: 'start', behavior: 'instant' })")
+    expect(card).to_have_attribute("data-test-intersecting", "true", timeout=3000)
+    page.clock.run_for(2 * SCENE_DELAY)
+    assert play.inner_text() == "Resume"
+    assert_scene(page, group, "Sunset")
+    play.dispatch_event("click")
+    page.clock.run_for(SCENE_DELAY - 1200 - 1)
+    assert_scene(page, group, "Sunset")
+    page.clock.run_for(1)
+    assert_scene(page, group, "After dinner")
+
+    # Headless tabs remain visible, so exercise the tab-visibility event directly.
+    visibility = """hidden => {
+        Object.defineProperties(document, {
+            hidden: { configurable: true, value: hidden },
+            visibilityState: { configurable: true, value: hidden ? "hidden" : "visible" },
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+    }"""
+    page.clock.run_for(1000)
+    page.evaluate(visibility, True)
+    assert play.inner_text() == "Resume"
+    page.clock.run_for(2 * SCENE_DELAY)
+    assert_scene(page, group, "After dinner")
+    page.evaluate(visibility, False)
+    page.clock.run_for(2 * SCENE_DELAY)
+    assert play.inner_text() == "Resume"
+    assert_scene(page, group, "After dinner")
+    play.dispatch_event("click")
+    page.clock.run_for(SCENE_DELAY - 1000 - 1)
+    assert_scene(page, group, "After dinner")
+    page.clock.run_for(1)
+    assert_scene(page, group, "TV time")
+
+
+def check_pi_landing(page, width, height):
+    panel = page.get_by_role("tabpanel", name="Install on a Pi")
+    assert panel.is_visible(), width
+    assert page.locator("#setup").evaluate("heading => document.activeElement === heading"), width
+    for locator in (
+        page.locator("#setup"), page.get_by_role("tablist", name="Setup path"),
+        panel.locator("#setup-heading-pi"),
+    ):
+        box = locator.bounding_box()
+        assert box is not None and 0 <= box["y"] < height, (width, locator, box)
+    guide = page.get_by_role("link", name="Start the lights-only setup", exact=True)
+    assert guide.get_attribute("href").endswith("/docs/service.md#lights-only-quick-start"), width
+
+
+def check_report_back(page, simulator):
+    link = simulator.get_by_role("link", name="example morning note")
+    link.scroll_into_view_if_needed()
+    reading_position = page.evaluate("window.scrollY")
+    link.click()
+    assert page.evaluate("location.hash") == "#sample-report"
+    assert abs(page.evaluate("window.scrollY") - reading_position) > 100
+    page.go_back()
+    page.wait_for_function("position => Math.abs(window.scrollY - position) <= 2", arg=reading_position)
+    assert page.evaluate("location.hash") == "#setup-panel-simulator"
+    assert simulator.is_visible()
+
+
+def check_scene_picker_resize(page, url):
+    page.set_viewport_size({"width": 480, "height": 800})
+    page.goto(url)
+    picker = page.locator(".routine-picker")
+    summary = picker.locator("summary")
+    picker_open = "expected => document.querySelector('.routine-picker').open === expected"
+    assert not picker.evaluate("picker => picker.open")
+    summary.press("Enter")
+    assert picker.evaluate("picker => picker.open")
+    page.set_viewport_size({"width": 390, "height": 800})
+    assert picker.evaluate("picker => picker.open")
+    summary.press("Enter")
+    assert not picker.evaluate("picker => picker.open")
+    page.set_viewport_size({"width": 481, "height": 800})
+    page.wait_for_function(picker_open, arg=True)
+    assert summary.is_hidden()
+    page.set_viewport_size({"width": 480, "height": 800})
+    page.wait_for_function(picker_open, arg=False)
+
+
 def check_browser():
     from playwright.sync_api import sync_playwright
 
@@ -283,9 +418,9 @@ def check_browser():
                     check_scene_selection(page, width, height)
                     page.get_by_role("link", name="Build on a Raspberry Pi").click()
                     pi = page.get_by_role("tab", name="Install on a Pi")
-                    panel = page.get_by_role("tabpanel", name="Install on a Pi")
-                    panel.get_by_role("link", name="Install the pinned developer preview").wait_for()
-                    page.get_by_role("link", name="What you need").click()
+                    assert page.evaluate("location.hash") == "#setup-panel-pi", width
+                    check_pi_landing(page, width, height)
+                    page.get_by_role("link", name="What you need", exact=True).click()
                     if width <= 760:
                         assert page.locator(".parts-list").bounding_box()["y"] < page.locator(".parts-figure").bounding_box()["y"]
                     page.get_by_role("link", name="Setup", exact=True).click()
@@ -297,9 +432,14 @@ def check_browser():
                     simulator.get_by_role("button", name="Copy commands").click()
                     simulator.get_by_role("button", name="Copied!").wait_for()
                     assert page.evaluate("navigator.clipboard.readText()") == simulator.locator("pre code").text_content()
+                    check_report_back(page, simulator)
                     assert page.evaluate("document.documentElement.scrollWidth === innerWidth"), width
                     page.goto(f"{url}#setup-panel-pi")
-                    assert panel.is_visible()
+                    page.reload()
+                    check_pi_landing(page, width, height)
+                    page.goto(f"{url}#setup-panel-simulator")
+                    page.reload()
+                    assert simulator.is_visible()
                     assert not errors, errors
                     context.close()
                 with browser.new_context() as context:
@@ -308,11 +448,14 @@ def check_browser():
                     page.on("pageerror", lambda error: errors.append(str(error)))
                     check_demo_playback(page, url)
                     assert not errors, errors
+                    check_demo_auto_pause(context.new_page(), url)
+                    check_scene_picker_resize(context.new_page(), url)
                 page = browser.new_context(java_script_enabled=False).new_page()
                 page.goto(f"{url}#setup-panel-pi")
                 for selector in ("#setup-panel-simulator", "#setup-panel-pi", "#sample-report"):
                     assert page.locator(selector).is_visible(), selector
                 assert page.locator("#sample-report-text").inner_text().strip(), "Static morning note is empty"
+                assert page.locator(".routine-interactions").is_hidden()
         finally:
             server.shutdown()
             thread.join()

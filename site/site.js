@@ -11,7 +11,7 @@ const demoScenes = [
   { name: "morning", time: "07:18", label: "7:18 AM", lamp: "kitchen", period: "dawn", cue: "kettle",
     text: "The kitchen lamp comes on briefly after dawn, with an optional kettle cue." },
   { name: "report", time: "08:00", label: "8:00 AM", period: "dawn",
-    text: "The lamps are off. The Pi saves a note about last night’s lamp activity." },
+    text: "The Pi saves the morning note." },
 ];
 
 function setupEveningDemo() {
@@ -29,7 +29,7 @@ function setupEveningDemo() {
   const sceneButtons = [...card.querySelectorAll("[data-scene-button]")];
   const sceneDuration = 3000;
   const lastScene = demoScenes.length - 1;
-  const playLabels = { ready: "Play evening", playing: "Pause", paused: "Resume", finished: "Replay" };
+  const playLabels = { ready: "Play demo", playing: "Pause", paused: "Resume", finished: "Replay" };
   let sceneIndex = 0;
   let playState = "ready";
   let timer;
@@ -47,6 +47,15 @@ function setupEveningDemo() {
   function stopAudio() {
     audio.pause();
     audio.currentTime = 0;
+  }
+
+  function pausePlayback() {
+    if (playState === "playing") {
+      clearTimeout(timer);
+      remaining = Math.max(0, nextSceneAt - performance.now());
+      setPlayback("paused");
+    }
+    stopAudio();
   }
 
   function playCue(cue = demoScenes[sceneIndex].cue) {
@@ -86,10 +95,7 @@ function setupEveningDemo() {
 
   playButton.addEventListener("click", () => {
     if (playState === "playing") {
-      clearTimeout(timer);
-      remaining = Math.max(0, nextSceneAt - performance.now());
-      stopAudio();
-      setPlayback("paused");
+      pausePlayback();
       return;
     }
     if (playState === "paused") {
@@ -121,6 +127,22 @@ function setupEveningDemo() {
     });
   }
 
+  const picker = card.querySelector(".routine-picker");
+  if (picker) {
+    const compact = window.matchMedia("(max-width: 480px)");
+    const setDefaultPicker = () => { picker.open = !compact.matches; };
+    setDefaultPicker();
+    compact.addEventListener("change", setDefaultPicker);
+  }
+
+  new IntersectionObserver(([entry]) => {
+    if (!entry.isIntersecting) pausePlayback();
+  }).observe(card);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) pausePlayback();
+  });
+  window.addEventListener("pagehide", pausePlayback);
+
   showScene(0);
   setPlayback("ready");
   card.querySelector(".routine-interactions").hidden = false;
@@ -131,6 +153,8 @@ setupEveningDemo();
 const setupTabs = document.querySelector(".setup-tabs");
 const tabs = [...setupTabs.querySelectorAll("[role=tab]")];
 const panels = tabs.map((tab) => document.getElementById(tab.getAttribute("aria-controls")));
+const setupHeading = document.getElementById("setup");
+setupHeading.tabIndex = -1;
 
 function selectTab(selected) {
   for (const [index, tab] of tabs.entries()) {
@@ -149,11 +173,28 @@ function activateTab(selected) {
   }
 }
 
-function selectTabFromHash() {
+function reachSetupHeading() {
+  setupHeading.focus({ preventScroll: true });
+  setupHeading.scrollIntoView();
+}
+
+function selectTabFromHash(restoreScroll = false) {
+  const returnTo = window.history.state?.setupReturn;
+  const savedTab = tabs.find((tab) => tab.id === returnTo?.tab);
+  if (restoreScroll && savedTab && Number.isFinite(returnTo.top)) {
+    selectTab(savedTab);
+    requestAnimationFrame(() => window.scrollTo({ top: returnTo.top, behavior: "instant" }));
+    return;
+  }
+
   const index = panels.findIndex((panel) => `#${panel.id}` === window.location.hash);
   if (index === -1) return;
   selectTab(tabs[index]);
-  panels[index].scrollIntoView();
+  requestAnimationFrame(reachSetupHeading);
+}
+
+function followsHere(event) {
+  return !event.defaultPrevented && event.button === 0 && !(event.altKey || event.ctrlKey || event.metaKey || event.shiftKey);
 }
 
 for (const [index, tab] of tabs.entries()) {
@@ -176,10 +217,30 @@ for (const [index, tab] of tabs.entries()) {
     selected.focus({ preventScroll: true });
   });
 }
+
+for (const [index, panel] of panels.entries()) {
+  for (const link of document.querySelectorAll(`a[href="#${panel.id}"]`)) {
+    link.addEventListener("click", (event) => {
+      if (!followsHere(event)) return;
+      event.preventDefault();
+      activateTab(tabs[index]);
+      reachSetupHeading();
+    });
+  }
+}
+
+for (const link of document.querySelectorAll('.setup-panel a[href="#sample-report"]')) {
+  link.addEventListener("click", (event) => {
+    if (!followsHere(event) || window.location.hash === "#sample-report") return;
+    const tab = tabs.find((option) => option.getAttribute("aria-selected") === "true");
+    window.history.replaceState({ ...window.history.state, setupReturn: { tab: tab.id, top: window.scrollY } }, "");
+  });
+}
+
 setupTabs.hidden = false;
 selectTab(tabs[0]);
 selectTabFromHash();
-window.addEventListener("hashchange", selectTabFromHash);
+window.addEventListener("hashchange", (event) => selectTabFromHash(new URL(event.oldURL).hash === "#sample-report"));
 
 const feedback = document.getElementById("copy-feedback");
 for (const button of document.querySelectorAll("[data-copy]")) {
