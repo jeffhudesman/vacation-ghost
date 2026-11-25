@@ -6,12 +6,14 @@
   <meta name="description" content="Build a local Raspberry Pi project that makes an empty house look lived in. See the hardware list, try the simulator, and set up your first trip.">
   <meta name="theme-color" content="#f8f7f3">
   <meta property="og:type" content="website">
-  <meta property="og:title" content="Vacation Ghost — Make home look lived in">
+  <meta property="og:title" content="Vacation Ghost | Raspberry Pi Vacation Lighting">
+  <meta property="og:url" content="https://vacationghost.com/">
   <meta property="og:description" content="Watch a sample night and see how to build a two-lamp Raspberry Pi setup that makes an empty house look lived in.">
   <meta property="og:image" content="https://raw.githubusercontent.com/jeffhudesman/vacation-ghost/8f9f9705310c10513dae9832e493f63418516c81/site/assets/house-at-dusk-1120.webp">
   <meta property="og:image:alt" content="A house at dusk with warm light visible through its windows.">
   <meta name="twitter:card" content="summary_large_image">
-  <title>Vacation Ghost — Make home look lived in</title>
+  <title>Vacation Ghost | Raspberry Pi Vacation Lighting</title>
+  <link rel="canonical" href="https://vacationghost.com/">
   <link rel="icon" href="assets/ghost.png" type="image/png">
   <link rel="stylesheet" href="styles.css">
   <script src="site.js" defer></script>
@@ -36,13 +38,25 @@
     <section class="shell hero" aria-labelledby="hero-title">
       <div class="hero-copy">
         <p class="eyebrow"><span class="signal" aria-hidden="true"></span> Open source for Raspberry Pi</p>
-        <h1 id="hero-title">Make home<br>look <em>lived in.</em></h1>
-        <p class="intro">Vacation Ghost is a DIY project for a small Raspberry Pi computer. Set your trip dates and it switches two lamps in turn, then saves a morning report on the Pi.</p>
+        <h1 id="hero-title">Make home look <em>lived in</em> while you’re away.</h1>
+        <p class="intro">Vacation Ghost is an open-source Raspberry Pi project that alternates two lamps on compatible smart plugs and saves an activity report on the Pi.</p>
+        <p class="release-status"><strong>Pi developer preview.</strong> Physical testing pending.</p>
         <div class="hero-actions">
-          <a class="button button-primary" href="#sample-evening">See the 21-second demo <span aria-hidden="true">↓</span></a>
-          <a class="text-link" href="#setup-panel-pi">Build on a Raspberry Pi <span aria-hidden="true">↓</span></a>
+          <div class="hero-demo">
+            <a class="button button-primary" href="#sample-evening" aria-describedby="demo-requirements">Watch the 21-second demo <span aria-hidden="true">↓</span></a>
+            <p id="demo-requirements">No setup needed</p>
+          </div>
+          <ul class="hero-paths" role="list">
+            <li>
+              <a class="text-link" href="#setup-panel-simulator" aria-describedby="simulator-requirements">Try the Linux simulator <span aria-hidden="true">↓</span></a>
+              <p id="simulator-requirements">Git and Python 3.11 or later</p>
+            </li>
+            <li>
+              <a class="text-link" href="#setup-panel-pi" aria-describedby="pi-requirements">Build on a Raspberry Pi <span aria-hidden="true">↓</span></a>
+              <p id="pi-requirements">Two compatible plugs and network setup</p>
+            </li>
+          </ul>
         </div>
-        <p class="release-status"><strong>Developer preview.</strong> Physical Pi testing pending.</p>
       </div>
       <figure class="hero-figure">
         <img src="assets/house-at-dusk.webp"
@@ -77,12 +91,19 @@
             <span class="scene-cue"><i class="scene-cue-waves"></i> Optional sound</span>
           </div>
           <div class="routine-card-body">
+            <div class="scene-caption" aria-live="polite" aria-atomic="true">
+              <p class="scene-caption-heading">
+                <strong id="scene-name">Sunset</strong>
+                <time id="scene-time" datetime="19:34">7:34 PM</time>
+              </p>
+              <p id="scene-text">The kitchen lamp switches on.</p>
+            </div>
             <div class="routine-interactions" hidden>
-              <p class="routine-prompt">Sunset to morning. Play the demo or jump to a scene. Sound is optional.</p>
               <div class="routine-playback">
                 <button class="scene-play" id="scene-play" type="button">Play demo</button>
-                <a class="scene-read-note" id="scene-read-note" href="#sample-report" hidden>Read the morning note</a>
+                <button class="scene-restart" id="scene-restart" type="button">Restart</button>
                 <button class="scene-sound" id="scene-sound" type="button" aria-pressed="false">Sound <span id="scene-sound-state" aria-hidden="true">off</span></button>
+                <a class="scene-read-note" id="scene-read-note" href="#sample-report" hidden>Read the morning note</a>
               </div>
               <progress class="scene-progress" id="scene-progress" value="0" max="21" aria-label="Demo progress"></progress>
               <details class="routine-picker" open>
@@ -90,25 +111,32 @@
                 <div class="routine-steps" role="group" aria-label="Sample scenes">
                   <button type="button" data-scene-button="kitchen" aria-pressed="true">Sunset</button>
                   <button type="button" data-scene-button="living" aria-pressed="false">After dinner</button>
-                  <button type="button" data-scene-button="tv" aria-pressed="false">TV time</button>
-                  <button type="button" data-scene-button="break" aria-pressed="false">Kitchen break</button>
-                  <button type="button" data-scene-button="drama" aria-pressed="false">Late TV</button>
+                  <button type="button" data-scene-button="tv" aria-pressed="false" aria-describedby="scene-tv-option">
+                    TV time <span class="scene-option" id="scene-tv-option" aria-hidden="true">Optional glow and sound</span>
+                  </button>
+                  <button type="button" data-scene-button="break" aria-pressed="false" aria-describedby="scene-break-option">
+                    Kitchen break <span class="scene-option" id="scene-break-option" aria-hidden="true">Optional sound</span>
+                  </button>
+                  <button type="button" data-scene-button="drama" aria-pressed="false" aria-describedby="scene-drama-option">
+                    Late TV <span class="scene-option" id="scene-drama-option" aria-hidden="true">Optional glow</span>
+                  </button>
                   <button type="button" data-scene-button="bedtime" aria-pressed="false">Bedtime</button>
-                  <button type="button" data-scene-button="morning" aria-pressed="false">Morning kitchen</button>
+                  <button type="button" data-scene-button="morning" aria-pressed="false" aria-describedby="scene-morning-option">
+                    Morning kitchen <span class="scene-option" id="scene-morning-option" aria-hidden="true">Optional sound</span>
+                  </button>
                   <button type="button" data-scene-button="report" aria-pressed="false">Morning note</button>
                 </div>
               </details>
               <audio id="scene-audio" preload="none"></audio>
             </div>
-            <div class="scene-caption" aria-live="polite" aria-atomic="true">
-              <time id="scene-time" datetime="19:34">7:34 PM</time>
-              <span id="scene-text">The kitchen lamp switches on.</span>
-            </div>
             <figure class="demo-report" id="sample-report" tabindex="-1">
-              <figcaption>Example morning note</figcaption>
+              <figcaption>Previous evening activity</figcaption>
               <blockquote id="sample-report-text">“Lamps ran between 7:34 PM and 10:45 PM local time (3 hr 11 min total).”</blockquote>
             </figure>
-            <a class="routine-next" href="#parts">See what you need <span aria-hidden="true">↓</span></a>
+            <div class="routine-next">
+              <a href="#parts">See what you need <span aria-hidden="true">↓</span></a>
+              <a href="#setup-panel-simulator">Try the Linux simulator <span aria-hidden="true">↓</span></a>
+            </div>
           </div>
         </div>
       </div>
@@ -118,24 +146,28 @@
       <div class="section-intro">
         <p class="eyebrow">What you need</p>
         <h2 id="parts-title">Start with <em>two lamps.</em></h2>
-        <p>Start with a small computer, two smart plugs, and lamps you already own.</p>
-        <div class="parts-intro-tools">
-          <a class="text-link" href="#setup-panel-pi">Go to Pi setup <span aria-hidden="true">↓</span></a>
-          <a class="text-link" href="https://github.com/jeffhudesman/vacation-ghost/blob/8f9f9705310c10513dae9832e493f63418516c81/docs/hardware.md">Full parts list and wiring guide <span class="arrow-up" aria-hidden="true"></span></a>
-        </div>
+        <p>Check these requirements before buying parts for the lights-only build.</p>
       </div>
       <div class="parts-grid">
         <ul class="parts-list" role="list">
           <li class="part"><div class="part-icon" aria-hidden="true">▤</div><div><h3>A Raspberry Pi kit</h3><p>Use a Pi Zero 2 W or Pi 4 with a power supply, a microSD card, and a case. It runs Raspberry Pi OS.</p></div></li>
-          <li class="part"><div class="part-icon" aria-hidden="true">⌁</div><div><h3>Two compatible smart plugs</h3><p>Choose two Shelly Gen2 or Gen3 plugs that support local control. Put both on a restricted network that the Pi can reach. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/8f9f9705310c10513dae9832e493f63418516c81/docs/hardware.md#restrict-plug-access">Check plug compatibility</a>.</p></div></li>
-          <li class="part"><div class="part-icon" aria-hidden="true">◒</div><div><h3>Two lamps you already own</h3><p>Reuse lamps that light up when power returns. Leave their switches on so the smart plugs can control them.</p></div></li>
-          <li class="part"><div class="part-icon" aria-hidden="true">✧</div><div><h3>Optional glow and sound</h3><p>For TV glow, add a compatible 5 V LED strip, its power supply, and a logic level shifter. For sound, add a USB audio adapter and powered speaker.</p></div></li>
+          <li class="part"><div class="part-icon" aria-hidden="true">⌁</div><div><h3>Two compatible smart plugs</h3><p>Check your exact Shelly Gen2 or Gen3 model and firmware for local RPC and switch channel 0. Confirm the firmware supports auto-off and can keep the plug off when power returns. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/8f9f9705310c10513dae9832e493f63418516c81/docs/hardware.md#hardware-compatibility">Check plug compatibility</a>.</p></div></li>
+          <li class="part"><div class="part-icon" aria-hidden="true">◒</div><div><h3>Two lamps you already own</h3><p>Test each lamp by leaving its switch on, unplugging it, and plugging it back in. It should light up as soon as it gets power.</p></div></li>
+          <li class="part"><div class="part-icon" aria-hidden="true">◇</div><div><h3>Control of your local network</h3><p>You’ll need to reserve two plug addresses and restrict access to the Pi and trusted administrators. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/8f9f9705310c10513dae9832e493f63418516c81/docs/hardware.md#restrict-plug-access">Set up your plug network</a>.</p></div></li>
         </ul>
         <figure class="parts-figure">
           <img src="assets/pi-and-plugs.webp" width="1120" height="747" loading="lazy" alt="Illustration of a small enclosed computer and two compact smart plugs.">
           <figcaption>Illustration of the lights-only setup</figcaption>
         </figure>
       </div>
+      <div class="parts-intro-tools">
+        <a class="button button-primary" href="#setup-panel-pi">Go to Pi setup <span aria-hidden="true">↓</span></a>
+        <a class="text-link" href="https://github.com/jeffhudesman/vacation-ghost/blob/8f9f9705310c10513dae9832e493f63418516c81/docs/hardware.md">Full parts list and wiring guide <span class="arrow-up" aria-hidden="true"></span></a>
+      </div>
+      <aside class="parts-optional" aria-labelledby="parts-optional-title">
+        <h3 id="parts-optional-title">Optional glow and sound</h3>
+        <p>For TV glow, add a compatible 5 V LED strip, its power supply, and a logic level shifter. For sound, add a USB audio adapter and powered speaker.</p>
+      </aside>
     </section>
 
     <div class="setup-wrap">
@@ -153,7 +185,6 @@
                 <button id="setup-tab-pi" type="button" role="tab" aria-selected="false" tabindex="-1"
                         aria-controls="setup-panel-pi">Install on a Pi</button>
               </div>
-              <a class="setup-link" href="https://github.com/jeffhudesman/vacation-ghost/blob/8f9f9705310c10513dae9832e493f63418516c81/docs/service.md#lights-only-quick-start">Pi setup guide <span class="arrow-up" aria-hidden="true"></span></a>
             </div>
           </div>
           <section id="setup-panel-simulator" class="setup-panel" aria-labelledby="setup-heading-simulator">
@@ -180,13 +211,27 @@
 )</code></pre>
                 </div>
               </div>
-              <p class="example-result">Compare the message with the <a href="#sample-report">example morning note</a>.</p>
+              <p class="example-result">Look for <code>"dry_run": true</code> and compare the lamp timing in <code>message</code> with the <a href="#sample-report">example morning note</a>.</p>
+              <details class="report-example">
+                <summary>See example JSON fields</summary>
+                <pre><code id="sample-report-json">{
+  "dry_run": true,
+  "lamp_seconds": 11460,
+  "device_faults": 0,
+  "message": "Simulation. Lamps ran between 7:34 PM and 10:45 PM local time (3 hr 11 min total). …"
+}</code></pre>
+                <p>The <code>message</code> field is shortened here. The report is saved locally as a JSON file.</p>
+              </details>
             </div>
           </section>
           <section id="setup-panel-pi" class="setup-panel" aria-labelledby="setup-heading-pi">
             <div class="setup-description">
               <h3 id="setup-heading-pi">Your first Pi install.</h3>
-              <a class="setup-link pi-quick-start" href="https://github.com/jeffhudesman/vacation-ghost/blob/8f9f9705310c10513dae9832e493f63418516c81/docs/service.md#lights-only-quick-start">Start the lights-only setup <span class="arrow-up" aria-hidden="true"></span></a>
+              <p>Use Raspberry Pi OS and a terminal with sudo access. Physical Pi testing is pending.</p>
+              <div class="pi-start-links">
+                <a class="setup-link pi-quick-start" href="https://github.com/jeffhudesman/vacation-ghost/blob/main/docs/service.md#lights-only-quick-start">Start the lights-only setup <span class="arrow-up" aria-hidden="true"></span></a>
+                <a class="setup-link" href="https://github.com/jeffhudesman/vacation-ghost/blob/8f9f9705310c10513dae9832e493f63418516c81/docs/hardware.md#physical-release-checklist">Open the power and network test checklist <span class="arrow-up" aria-hidden="true"></span></a>
+              </div>
               <ol>
                 <li>Prepare Raspberry Pi OS and connect both plugs to the restricted network. Follow the guide to install the lights-only profile.</li>
                 <li>Set a future departure, your return, the trip’s time zone, and both plug addresses. Use the <a href="https://github.com/jeffhudesman/vacation-ghost/blob/8f9f9705310c10513dae9832e493f63418516c81/examples/vacation.lights-only.toml">lights-only example</a> as a template.</li>
@@ -195,7 +240,6 @@
               <div class="preview-build">
                 <p>Use the full commit ID from <a href="https://github.com/jeffhudesman/vacation-ghost/releases/tag/v0.1.0-preview.1">Developer Preview 1</a>.</p>
                 <code id="preview-commit">8f9f9705310c10513dae9832e493f63418516c81</code>
-                <a class="setup-link" href="https://github.com/jeffhudesman/vacation-ghost/blob/8f9f9705310c10513dae9832e493f63418516c81/docs/hardware.md#physical-release-checklist">Open the hardware checklist <span class="arrow-up" aria-hidden="true"></span></a>
               </div>
             </div>
             <div>
@@ -219,7 +263,6 @@ Plug living: off
 TV glow: disabled
 Sound: disabled</code></pre>
               </figure>
-              <p class="example-result">Physical Pi testing is pending.</p>
             </div>
           </section>
           <p id="copy-feedback" class="sr-only" role="status"></p>
@@ -239,7 +282,8 @@ Sound: disabled</code></pre>
         </details>
         <details>
           <summary>Where do I find my morning note?</summary>
-          <p>During a trip, the Pi saves the previous night’s note at 8 AM in the time zone you set for the trip. Look for the file named for its delivery date under <code>/var/lib/vacation-ghost/current/daily/</code>. When you return, the trip summary is in <code>/var/lib/vacation-ghost/current/trip.json</code>. The <a href="https://github.com/jeffhudesman/vacation-ghost/blob/8f9f9705310c10513dae9832e493f63418516c81/docs/service.md#read-reports-locally">Pi guide</a> shows how to read the reports.</p>
+          <p>The Pi saves a local JSON file at 8 AM in the trip’s time zone. Nothing is sent automatically. Look for the delivery date under <code>/var/lib/vacation-ghost/current/daily/</code>. The final trip summary is in <code>/var/lib/vacation-ghost/current/trip.json</code>.</p>
+          <p><a href="https://github.com/jeffhudesman/vacation-ghost/blob/8f9f9705310c10513dae9832e493f63418516c81/docs/service.md#read-reports-locally">Get the command to read a report on your Pi</a>.</p>
         </details>
         <details>
           <summary>What if my plans change?</summary>
