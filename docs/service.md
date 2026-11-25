@@ -31,10 +31,10 @@ Before continuing, confirm the reported Python version and the Pi’s clock. Tes
 
 ### Install from a verified release
 
-Open the published [v0.1.0-preview.1 GitHub prerelease](https://github.com/jeffhudesman/vacation-ghost/releases/tag/v0.1.0-preview.1) and replace `REPLACE_WITH_FULL_SHA_FROM_RELEASE_NOTES` below with the full source commit ID shown there. If the tag is signed, verify it with the trusted maintainer key. The first block checks that the tag points at the published commit and stages that source for installation. Run both blocks in the same shell.
+Open the [v0.1.0-preview.2 GitHub prerelease](https://github.com/jeffhudesman/vacation-ghost/releases/tag/v0.1.0-preview.2) and replace `REPLACE_WITH_FULL_SHA_FROM_RELEASE_NOTES` below with the full source commit ID shown there. If the tag is signed, verify it with the trusted maintainer key. The first block checks that the tag points at the published commit and stages that source for installation. Run both blocks in the same shell.
 
 ```sh
-release_tag=v0.1.0-preview.1
+release_tag=v0.1.0-preview.2
 release_commit=REPLACE_WITH_FULL_SHA_FROM_RELEASE_NOTES
 source_dir=$(mktemp -d /tmp/vacation-ghost-source.XXXXXX)
 release_dir=$(mktemp -d /tmp/vacation-ghost-release.XXXXXX)

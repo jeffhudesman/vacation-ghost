@@ -219,7 +219,7 @@ function reachSetupHeading() {
   setupHeading.scrollIntoView();
 }
 
-function selectTabFromHash(restoreScroll = false) {
+function selectTabFromHash(restoreScroll = false, initialLoad = false) {
   const returnTo = window.history.state?.reportReturn;
   const savedTab = tabs.find((tab) => tab.id === returnTo?.tab);
   if (restoreScroll && savedTab && Number.isFinite(returnTo.top)) {
@@ -228,10 +228,18 @@ function selectTabFromHash(restoreScroll = false) {
     return;
   }
 
-  const index = panels.findIndex((panel) => `#${panel.id}` === window.location.hash);
+  const hash = window.location.hash;
+  const index = panels.findIndex((panel) => `#${panel.id}` === hash);
   if (index === -1) return;
   selectTab(tabs[index]);
-  requestAnimationFrame(reachSetupHeading);
+  if (initialLoad) {
+    // Let the browser finish its initial fragment and reload scroll restoration.
+    window.addEventListener("pageshow", () => {
+      if (window.location.hash === hash) requestAnimationFrame(reachSetupHeading);
+    }, { once: true });
+  } else {
+    requestAnimationFrame(reachSetupHeading);
+  }
 }
 
 function followsHere(event) {
@@ -280,7 +288,7 @@ for (const link of document.querySelectorAll('a[href="#sample-report"]')) {
 
 setupTabs.hidden = false;
 selectTab(tabs[0]);
-selectTabFromHash();
+selectTabFromHash(false, true);
 window.addEventListener("hashchange", (event) => selectTabFromHash(new URL(event.oldURL).hash === "#sample-report"));
 
 const feedback = document.getElementById("copy-feedback");
