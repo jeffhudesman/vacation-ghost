@@ -2,9 +2,6 @@ name: Deploy website
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: [.github/workflows/pages.yml]
 
 permissions: {}
 
@@ -14,10 +11,7 @@ concurrency:
 
 jobs:
   site:
-    if: >-
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'workflow_dispatch' ||
-       github.event.head_commit.message == 'Deploy sidewalk animation 233807a')
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
     uses: ./.github/workflows/site.yml
