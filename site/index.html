@@ -9,7 +9,7 @@
   <meta property="og:title" content="Vacation Ghost | Raspberry Pi Vacation Lighting">
   <meta property="og:url" content="https://vacationghost.com/">
   <meta property="og:description" content="Watch a sample night and see how to build a two-lamp Raspberry Pi setup that makes an empty house look lived in.">
-  <meta property="og:image" content="https://raw.githubusercontent.com/jeffhudesman/vacation-ghost/8f9f9705310c10513dae9832e493f63418516c81/site/assets/house-at-dusk-1120.webp">
+  <meta property="og:image" content="https://raw.githubusercontent.com/jeffhudesman/vacation-ghost/34d794e52c58b3cfb02027f728ae842d26ae03af/site/assets/house-at-dusk-1120.webp">
   <meta property="og:image:alt" content="A house at dusk with warm light visible through its windows.">
   <meta name="twitter:card" content="summary_large_image">
   <title>Vacation Ghost | Raspberry Pi Vacation Lighting</title>
@@ -151,9 +151,9 @@
       <div class="parts-grid">
         <ul class="parts-list" role="list">
           <li class="part"><div class="part-icon" aria-hidden="true">▤</div><div><h3>A Raspberry Pi kit</h3><p>Use a Pi Zero 2 W or Pi 4 with a power supply, a microSD card, and a case. It runs Raspberry Pi OS.</p></div></li>
-          <li class="part"><div class="part-icon" aria-hidden="true">⌁</div><div><h3>Two compatible smart plugs</h3><p>Check your exact Shelly Gen2 or Gen3 model and firmware for local RPC and switch channel 0. Confirm the firmware supports auto-off and can keep the plug off when power returns. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/8f9f9705310c10513dae9832e493f63418516c81/docs/hardware.md#hardware-compatibility">Check plug compatibility</a>.</p></div></li>
+          <li class="part"><div class="part-icon" aria-hidden="true">⌁</div><div><h3>Two compatible smart plugs</h3><p>Check your exact Shelly Gen2 or Gen3 model and firmware for local RPC and switch channel 0. Confirm the firmware supports auto-off and can keep the plug off when power returns. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/hardware.md#hardware-compatibility">Check plug compatibility</a>.</p></div></li>
           <li class="part"><div class="part-icon" aria-hidden="true">◒</div><div><h3>Two lamps you already own</h3><p>Test each lamp by leaving its switch on, unplugging it, and plugging it back in. It should light up as soon as it gets power.</p></div></li>
-          <li class="part"><div class="part-icon" aria-hidden="true">◇</div><div><h3>Control of your local network</h3><p>You’ll need to reserve two plug addresses and restrict access to the Pi and trusted administrators. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/8f9f9705310c10513dae9832e493f63418516c81/docs/hardware.md#restrict-plug-access">Set up your plug network</a>.</p></div></li>
+          <li class="part"><div class="part-icon" aria-hidden="true">◇</div><div><h3>Control of your local network</h3><p>You’ll need to reserve two plug addresses and restrict access to the Pi and trusted administrators. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/hardware.md#restrict-plug-access">Set up your plug network</a>.</p></div></li>
         </ul>
         <figure class="parts-figure">
           <img src="assets/pi-and-plugs.webp" width="1120" height="747" loading="lazy" alt="Illustration of a small enclosed computer and two compact smart plugs.">
@@ -162,7 +162,7 @@
       </div>
       <div class="parts-intro-tools">
         <a class="button button-primary" href="#setup-panel-pi">Go to Pi setup <span aria-hidden="true">↓</span></a>
-        <a class="text-link" href="https://github.com/jeffhudesman/vacation-ghost/blob/8f9f9705310c10513dae9832e493f63418516c81/docs/hardware.md">Full parts list and wiring guide <span class="arrow-up" aria-hidden="true"></span></a>
+        <a class="text-link" href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/hardware.md">Full parts list and wiring guide <span class="arrow-up" aria-hidden="true"></span></a>
       </div>
       <aside class="parts-optional" aria-labelledby="parts-optional-title">
         <h3 id="parts-optional-title">Optional glow and sound</h3>
@@ -203,7 +203,7 @@
   git clone https://github.com/jeffhudesman/vacation-ghost.git \
     "$demo_dir/vacation-ghost"
   cd "$demo_dir/vacation-ghost"
-  git checkout --quiet --detach 8f9f9705310c10513dae9832e493f63418516c81
+  git checkout --quiet --detach 34d794e52c58b3cfb02027f728ae842d26ae03af
   python3 -m vacation_ghost \
     --config examples/vacation.example.toml simulate \
     --at 2030-06-11T09:00:00Z --state-dir "$demo_dir/state"
@@ -218,9 +218,9 @@
   "dry_run": true,
   "lamp_seconds": 11460,
   "device_faults": 0,
-  "message": "Simulation. Lamps ran between 7:34 PM and 10:45 PM local time (3 hr 11 min total). …"
+  "message": "Simulation. Lamps ran between 7:34 PM and 10:45 PM local time (3 hr 11 min total)."
 }</code></pre>
-                <p>The <code>message</code> field is shortened here. The report is saved locally as a JSON file.</p>
+                <p>These are selected fields from the local JSON report.</p>
               </details>
             </div>
           </section>
@@ -229,17 +229,17 @@
               <h3 id="setup-heading-pi">Your first Pi install.</h3>
               <p>Use Raspberry Pi OS and a terminal with sudo access. Physical Pi testing is pending.</p>
               <div class="pi-start-links">
-                <a class="setup-link pi-quick-start" href="https://github.com/jeffhudesman/vacation-ghost/blob/main/docs/service.md#lights-only-quick-start">Start the lights-only setup <span class="arrow-up" aria-hidden="true"></span></a>
-                <a class="setup-link" href="https://github.com/jeffhudesman/vacation-ghost/blob/8f9f9705310c10513dae9832e493f63418516c81/docs/hardware.md#physical-release-checklist">Open the power and network test checklist <span class="arrow-up" aria-hidden="true"></span></a>
+                <a class="setup-link pi-quick-start" href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/service.md#lights-only-quick-start">Start the lights-only setup <span class="arrow-up" aria-hidden="true"></span></a>
+                <a class="setup-link" href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/hardware.md#physical-release-checklist">Open the power and network test checklist <span class="arrow-up" aria-hidden="true"></span></a>
               </div>
               <ol>
                 <li>Prepare Raspberry Pi OS and connect both plugs to the restricted network. Follow the guide to install the lights-only profile.</li>
-                <li>Set a future departure, your return, the trip’s time zone, and both plug addresses. Use the <a href="https://github.com/jeffhudesman/vacation-ghost/blob/8f9f9705310c10513dae9832e493f63418516c81/examples/vacation.lights-only.toml">lights-only example</a> as a template.</li>
+                <li>Set a future departure, your return, the trip’s time zone, and both plug addresses. Use the <a href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/examples/vacation.lights-only.toml">lights-only example</a> as a template.</li>
                 <li>Run <code>doctor</code> to check both plugs and <code>rehearse</code> while home. When the service says it’s idle and waiting for departure, enable it to start at boot.</li>
               </ol>
               <div class="preview-build">
-                <p>Use the full commit ID from <a href="https://github.com/jeffhudesman/vacation-ghost/releases/tag/v0.1.0-preview.1">Developer Preview 1</a>.</p>
-                <code id="preview-commit">8f9f9705310c10513dae9832e493f63418516c81</code>
+                <p>Use the full commit ID from <a href="https://github.com/jeffhudesman/vacation-ghost/releases/tag/v0.1.0-preview.2">Developer Preview 2</a>.</p>
+                <code id="preview-commit">34d794e52c58b3cfb02027f728ae842d26ae03af</code>
               </div>
             </div>
             <div>
@@ -283,15 +283,15 @@ Sound: disabled</code></pre>
         <details>
           <summary>Where do I find my morning note?</summary>
           <p>The Pi saves a local JSON file at 8 AM in the trip’s time zone. Nothing is sent automatically. Look for the delivery date under <code>/var/lib/vacation-ghost/current/daily/</code>. The final trip summary is in <code>/var/lib/vacation-ghost/current/trip.json</code>.</p>
-          <p><a href="https://github.com/jeffhudesman/vacation-ghost/blob/8f9f9705310c10513dae9832e493f63418516c81/docs/service.md#read-reports-locally">Get the command to read a report on your Pi</a>.</p>
+          <p><a href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/service.md#read-reports-locally">Get the command to read a report on your Pi</a>.</p>
         </details>
         <details>
           <summary>What if my plans change?</summary>
-          <p>Use <code>disarm</code> to end a trip early. If shutdown needs to be retried, <code>recover</code> only attempts to switch outputs off. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/8f9f9705310c10513dae9832e493f63418516c81/docs/service.md#stop-recover-or-change-trips">See the service guide</a>.</p>
+          <p>Use <code>disarm</code> to end a trip early. If shutdown needs to be retried, <code>recover</code> only attempts to switch outputs off. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/service.md#stop-recover-or-change-trips">See the service guide</a>.</p>
         </details>
         <details>
           <summary>Is it ready for an unattended trip?</summary>
-          <p>Physical Pi testing is still pending. Complete the <a href="https://github.com/jeffhudesman/vacation-ghost/blob/8f9f9705310c10513dae9832e493f63418516c81/docs/hardware.md#physical-release-checklist">hardware checklist</a> on your own setup, including power and network outages, before relying on it while away.</p>
+          <p>Physical Pi testing is still pending. Complete the <a href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/hardware.md#physical-release-checklist">hardware checklist</a> on your own setup, including power and network outages, before relying on it while away.</p>
         </details>
       </div>
     </section>
