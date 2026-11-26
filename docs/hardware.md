@@ -22,6 +22,8 @@ Once the plugs are on your restricted local network, follow the [lights-only set
 
 Add either option after the lamp checks pass.
 
+The TV-glow recipe uses the pinned [`rpi-ws281x` 5.0.0 driver](https://pypi.org/project/rpi-ws281x/5.0.0/) on the Pi Zero 2 W and Pi 4. The Pi 5 has GPIO and PWM through its [RP1 controller](https://github.com/raspberrypi/documentation/blob/fe7c672593752469d928e89f8d87d99bb6bc0a25/documentation/asciidoc/computers/io-controllers/rp1.adoc#L13-L51), which needs an RP1-compatible LED driver. The two-lamp setup controls Shelly plugs over the local network.
+
 | Quantity | Part | Notes |
 | --- | --- | --- |
 | 1 | WS2812B-compatible 5 V GRB strip | For TV glow on a Pi Zero 2 W or Pi 4. Use an 800 kHz strip and BCM GPIO18 on physical header pin 12. About 30 pixels is a starting point for a reflected glow. [Wiring diagram](#wire-the-optional-led-strip) |
@@ -42,7 +44,7 @@ Reserve both plugs for Vacation Ghost. Disable their auto-on timers, stock sched
 | --- | --- | --- |
 | Simulator | Linux with Python 3.11 or later and the IANA time-zone database | Covered by automated tests and a [Preview 2 run on a Raspberry Pi 5](#raspberry-pi-5-simulator-test). |
 | Lights only | Pi Zero 2 W, Pi 4, or Pi 5 and two Shelly Gen2 or Gen3 plugs using local `Shelly.GetDeviceInfo`, `Switch.GetStatus`, and `Switch.Set` | Complete the physical checklist on your Pi, plug models, and firmware. |
-| TV glow | Raspberry Pi Zero 2 W or Pi 4 with `rpi_ws281x`, PWM channel 0 on BCM GPIO18, and a WS2812B-compatible GRB strip | Complete the physical checklist on your Pi and OS image. |
+| TV glow | Documented `rpi-ws281x` 5.0.0 setup for Pi Zero 2 W or Pi 4, using PWM channel 0 on BCM GPIO18 and a WS2812B-compatible GRB strip | Complete the physical checklist on your Pi and OS image. |
 | Sound | ALSA `aplay`, a system-visible default USB audio device, and a powered speaker | Verify playback under the installed systemd unit. |
 
 ## Wire the optional LED strip
