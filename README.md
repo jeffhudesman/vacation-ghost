@@ -8,9 +8,7 @@ Make home look lived in while you’re away. Set your trip dates and Vacation Gh
 
 **Developer preview.** The Preview 2 simulator ran on a Raspberry Pi 5. Shelly plug and lamp control, optional LED and audio outputs, and automatic startup and trip recovery after a reboot still need physical testing. [Preview 2 release](https://github.com/jeffhudesman/vacation-ghost/releases/tag/v0.1.0-preview.2) · [Pi 5 test record](docs/hardware.md#raspberry-pi-5-simulator-test)
 
-[![Watch the Vacation Ghost demo. One window glows behind drawn curtains at dusk.](site/assets/house-at-dusk-1120.webp)](https://vacationghost.com/#sample-evening)
-
-[Watch the original concept GIF](https://raw.githubusercontent.com/jeffhudesman/vacation-ghost/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/images/vacation-ghost-demo.gif) (5.6 MiB)
+[![Watch the Vacation Ghost demo. Concept animation of house lights changing over an evening.](docs/images/vacation-ghost-demo.gif)](https://vacationghost.com/#sample-evening)
 
 ## Try it without hardware
 

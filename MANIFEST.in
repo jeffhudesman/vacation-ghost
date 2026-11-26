@@ -1,6 +1,6 @@
 include CONTRIBUTING.md
 recursive-include deploy *.service *.conf *.txt
 recursive-include docs *.md
-include site/assets/house-at-dusk-1120.webp
+include docs/images/vacation-ghost-demo.gif
 include examples/vacation.example.toml examples/vacation.lights-only.toml
 include tools/generate_sounds.py
