@@ -10,7 +10,7 @@ from pathlib import Path
 from threading import Event
 
 from . import state
-from .config import Config, load_config, parse_timestamp
+from .config import DEFAULT_LED_BACKEND, Config, load_config, parse_timestamp
 from .engine import Controller, recover_outputs, rehearse, run, simulate
 from .outputs import PiOutputs, SimulationOutputs
 from .reports import ReportStore, read_trip_id, trip_identity
@@ -20,7 +20,10 @@ def _outputs(config: Config) -> PiOutputs:
     hardware = config.hardware
     if hardware is None:
         raise ValueError("this command requires a [hardware] section in the local configuration")
-    return PiOutputs(hardware.plugs, hardware.led_count, hardware.led_pin, hardware.sounds_dir, hardware.volume)
+    return PiOutputs(
+        hardware.plugs, hardware.led_count, hardware.led_pin, hardware.sounds_dir, hardware.volume,
+        led_backend=hardware.led_backend,
+    )
 
 
 def _doctor(config: Config) -> int:
@@ -126,8 +129,11 @@ def _hardware_command(command: str, config: Config, state_dir: Path) -> None:
                 ) from exc
         with state.lock_file(state.DEVICE_DIR / "hardware.lock"), state.lock_file(state_dir / ".lock"):
             hardware = config.hardware
-            settings = json.dumps([hardware.plugs, hardware.led_count, hardware.led_pin], sort_keys=True)
-            hardware_id = hashlib.sha256(settings.encode()).hexdigest()
+            settings = [hardware.plugs, hardware.led_count, hardware.led_pin]
+            # Preserve pending shutdown records created with the original backend.
+            if hardware.led_count and hardware.led_backend != DEFAULT_LED_BACKEND:
+                settings.append(hardware.led_backend)
+            hardware_id = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
             reservation = state.OutputReservation(state_dir, state.DEVICE_DIR, hardware_id=hardware_id)
             if command == "recover":
                 if recover_outputs(config.rooms, outputs, reservation):

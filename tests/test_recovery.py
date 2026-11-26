@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import unittest
@@ -371,6 +372,31 @@ class RecoveryTests(unittest.TestCase):
         self.assertIn("No pending shutdown", output.getvalue())
         outputs.set_lamp.assert_not_called()
         outputs.set_glow.assert_not_called()
+
+    def test_recover_legacy_hardware_id_requires_original_led_backend(self):
+        config = self.live_config()
+        hardware = replace(config.hardware, led_count=2, led_pin=10)
+        config = replace(config, hardware=hardware)
+        legacy_settings = json.dumps([hardware.plugs, 2, 10], sort_keys=True)
+        reservation = OutputReservation(
+            self.trip, self.device, hardware_id=hashlib.sha256(legacy_settings.encode()).hexdigest()
+        )
+        reservation.before_glow()
+        outputs = Mock(spec=SimulationOutputs)
+        with (
+            patch.object(cli.state, "DEVICE_DIR", self.device),
+            patch.object(cli, "_outputs", return_value=outputs),
+            redirect_stdout(io.StringIO()),
+        ):
+            changed = replace(config, hardware=replace(hardware, led_backend="spi"))
+            with self.assertRaisesRegex(ValueError, "restore the original plug and LED configuration"):
+                cli._hardware_command("recover", changed, self.trip)
+            outputs.set_lamp.assert_not_called()
+            outputs.set_glow.assert_not_called()
+            self.assertTrue(reservation.engaged)
+            cli._hardware_command("recover", config, self.trip)
+        outputs.set_glow.assert_called_once_with((0, 0, 0))
+        self.assertFalse(reservation.engaged)
 
     def test_transient_plug_failure_reconciles_and_resumes(self):
         self.now = self.config.start

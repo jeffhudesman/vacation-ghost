@@ -22,7 +22,8 @@ from pathlib import Path
 from time import monotonic
 from urllib.parse import urlsplit
 
-from .config import LED_CHANNELS, LED_PIN
+from .config import DEFAULT_LED_BACKEND, LED_CHANNELS, resolve_led_pin
+from .spi_glow import SpiGlow
 
 LOG = logging.getLogger(__name__)
 MAX_VOLUME = 0.20
@@ -238,16 +239,15 @@ class PiOutputs:
         self,
         plugs: dict[str, str],
         led_count: int = 0,
-        led_pin: int = LED_PIN,
+        led_pin: int | None = None,
         sounds_dir: Path | None = None,
         volume: float = 0,
+        *,
+        led_backend: str = DEFAULT_LED_BACKEND,
     ) -> None:
         if not 0 <= volume <= MAX_VOLUME:
             raise ValueError(f"Volume must be between 0 and {MAX_VOLUME}")
-        if led_count < 0:
-            raise ValueError("LED count must be nonnegative")
-        if led_count and led_pin not in LED_CHANNELS:
-            raise ValueError(f"Unsupported LED data pin BCM {led_pin}. Use BCM {LED_PIN} (physical pin 12).")
+        self._led_pin = resolve_led_pin(led_backend, led_pin, led_count)
         self._origins = {room: _switch_origin(value) for room, value in plugs.items()}
         if len(set(self._origins.values())) != len(self._origins):
             raise ValueError("Each room needs its own plug")
@@ -255,7 +255,7 @@ class PiOutputs:
         self._volume = volume
         self._player: subprocess.Popen[bytes] | None = None
         self._led_count = led_count
-        self._led_pin = led_pin
+        self._spi_glow = SpiGlow(led_count) if led_count and led_backend == "spi" else None
         self._color = None
         self._strip = None
 
@@ -295,11 +295,17 @@ class PiOutputs:
     def check_glow(self) -> bool:
         if not self._led_count:
             return False
-        _load_glow_driver()
+        if self._spi_glow is None:
+            _load_glow_driver()
+        else:
+            self._spi_glow.check()
         return True
 
     def set_glow(self, rgb: RGB) -> None:
         if not self._led_count:
+            return
+        if self._spi_glow is not None:
+            self._spi_glow.show(rgb)
             return
         if self._strip is None:
             self._color, pixel_strip = _load_glow_driver()
@@ -380,4 +386,8 @@ class PiOutputs:
         self._player = None
 
     def close(self) -> None:
-        self.stop_sound()
+        try:
+            self.stop_sound()
+        finally:
+            if self._spi_glow is not None:
+                self._spi_glow.close()

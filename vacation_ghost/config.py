@@ -7,9 +7,12 @@ from datetime import UTC, datetime, time
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .spi_glow import SPI_LED_LIMIT, SPI_LED_PIN
+
 
 LED_PIN = 18
 LED_CHANNELS = {10: 0, 12: 0, 13: 1, 18: 0, 19: 1, 21: 0}
+DEFAULT_LED_BACKEND = "rpi_ws281x"
 
 
 @dataclass(frozen=True)
@@ -19,6 +22,7 @@ class Hardware:
     led_pin: int
     sounds_dir: Path | None
     volume: float
+    led_backend: str = DEFAULT_LED_BACKEND
 
 
 @dataclass(frozen=True)
@@ -58,6 +62,25 @@ def _bounded_number(value: object, lower: float, upper: float, name: str) -> flo
     return float(value)
 
 
+def resolve_led_pin(led_backend: str, led_pin: int | None, led_count: int) -> int:
+    if led_backend not in (DEFAULT_LED_BACKEND, "spi"):
+        raise ValueError(f'hardware.led_backend must be "{DEFAULT_LED_BACKEND}" or "spi"')
+    if type(led_count) is not int or led_count < 0:
+        raise ValueError("hardware.led_count must be a nonnegative integer")
+    if led_pin is None:
+        led_pin = SPI_LED_PIN if led_backend == "spi" else LED_PIN
+    if type(led_pin) is not int or led_pin < 0:
+        raise ValueError("hardware.led_pin must be a nonnegative GPIO number")
+    if led_count and led_backend == "spi":
+        if led_pin != SPI_LED_PIN:
+            raise ValueError(f"SPI glow requires hardware.led_pin = {SPI_LED_PIN} (physical pin 19)")
+        if led_count > SPI_LED_LIMIT:
+            raise ValueError(f"SPI glow supports at most {SPI_LED_LIMIT} pixels")
+    elif led_count and led_pin not in LED_CHANNELS:
+        raise ValueError(f"Unsupported LED data pin BCM {led_pin}. Use BCM {LED_PIN} (physical pin 12).")
+    return led_pin
+
+
 def _hardware(table: dict, rooms: tuple[str, str], directory: Path) -> Hardware:
     plugs = table["plugs"]
     if not isinstance(plugs, dict) or set(plugs) != set(rooms) or any(
@@ -67,14 +90,8 @@ def _hardware(table: dict, rooms: tuple[str, str], directory: Path) -> Hardware:
     if len(set(plugs.values())) != 2:
         raise ValueError("hardware.plugs must use two distinct plugs")
     led_count = table.get("led_count", 0)
-    led_pin = table.get("led_pin", LED_PIN)
-    if type(led_count) is not int or led_count < 0:
-        raise ValueError("hardware.led_count must be a nonnegative integer")
-    if type(led_pin) is not int or led_pin < 0:
-        raise ValueError("hardware.led_pin must be a nonnegative GPIO number")
-    if led_count and led_pin not in LED_CHANNELS:
-        pins = ", ".join(map(str, LED_CHANNELS))
-        raise ValueError(f"hardware.led_pin must be a supported BCM pin ({pins}) when glow is enabled")
+    led_backend = table.get("led_backend", DEFAULT_LED_BACKEND)
+    led_pin = resolve_led_pin(led_backend, table.get("led_pin"), led_count)
     sounds_dir = table.get("sounds_dir")
     volume = _bounded_number(
         table.get("volume", 0.08 if sounds_dir is not None else 0),
@@ -86,6 +103,7 @@ def _hardware(table: dict, rooms: tuple[str, str], directory: Path) -> Hardware:
         led_pin=led_pin,
         sounds_dir=directory / Path(sounds_dir).expanduser() if sounds_dir is not None else None,
         volume=volume,
+        led_backend=led_backend,
     )
 
 

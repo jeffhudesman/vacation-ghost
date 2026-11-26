@@ -25,6 +25,12 @@ class PiOutputsTest(unittest.TestCase):
     def setUp(self):
         self.plugs = {"kitchen": "192.168.1.20", "living": "192.168.1.21"}
 
+    def load_led_config(self, settings):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "trip.toml"
+            config_path.write_text(LIGHTS_ONLY.read_text().replace("led_count = 0", settings))
+            return load_config(config_path)
+
     def test_lights_only_configuration_requires_no_peripheral_dependencies(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "trip.toml"
@@ -44,8 +50,9 @@ kitchen = "192.168.1.20"
 living = "192.168.1.21"
 """)
             hardware = load_config(config_path).hardware
+        self.assertEqual((hardware.led_backend, hardware.led_pin), ("rpi_ws281x", 18))
         with (
-            patch.dict(sys.modules, {"rpi_ws281x": None}),
+            patch.dict(sys.modules, {"rpi_ws281x": None, "spidev": None}),
             patch("vacation_ghost.outputs.shutil.which", side_effect=AssertionError),
         ):
             outputs = PiOutputs(
@@ -284,6 +291,160 @@ living = "192.168.1.21"
         with self.assertRaisesRegex(ValueError, "Use BCM 18"):
             PiOutputs(self.plugs, led_count=2, led_pin=17)
         PiOutputs(self.plugs, led_pin=17)
+
+    def test_config_selects_glow_backend_and_pin(self):
+        for settings, backend, pin, count in (
+            ("led_count = 2", "rpi_ws281x", 18, 2),
+            ("led_count = 2\nled_pin = 19", "rpi_ws281x", 19, 2),
+            ('led_backend = "spi"\nled_count = 144', "spi", 10, 144),
+        ):
+            with self.subTest(backend=backend, pin=pin, count=count):
+                hardware = self.load_led_config(settings).hardware
+                self.assertEqual((hardware.led_backend, hardware.led_pin, hardware.led_count), (backend, pin, count))
+
+    def test_config_and_outputs_reject_incompatible_spi_settings(self):
+        for settings in (
+            'led_backend = "spi"\nled_count = 2\nled_pin = 18',
+            'led_backend = "spi"\nled_count = 145',
+            'led_backend = "other"\nled_count = 2',
+        ):
+            with self.subTest(settings=settings), self.assertRaises(ValueError):
+                self.load_led_config(settings)
+        with self.assertRaises(ValueError):
+            PiOutputs(self.plugs, led_backend="spi", led_count=2, led_pin=18)
+        with self.assertRaises(ValueError):
+            PiOutputs(self.plugs, led_backend="spi", led_count=145)
+
+    def test_disabled_spi_glow_requires_no_driver_or_device(self):
+        with patch.dict(sys.modules, {"spidev": None, "rpi_ws281x": None}):
+            outputs = PiOutputs(self.plugs, led_backend="spi")
+            self.assertFalse(outputs.check_glow())
+            outputs.set_glow((1, 2, 3))
+            outputs.set_glow((0, 0, 0))
+            outputs.close()
+
+    def test_doctor_checks_spi_device_without_writing_a_frame(self):
+        config = self.load_led_config('led_backend = "spi"\nled_count = 2')
+        device = Mock()
+        factory = Mock(return_value=device)
+        responses = [
+            b'{"mac":"AABBCCDDEE01"}', b'{"output":false}',
+            b'{"mac":"AABBCCDDEE02"}', b'{"output":true}',
+        ]
+        output = io.StringIO()
+        with (
+            patch.dict(sys.modules, {"spidev": SimpleNamespace(SpiDev=factory), "rpi_ws281x": None}),
+            patch("vacation_ghost.outputs._rpc_request", side_effect=responses),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(cli._doctor(config), 0)
+        self.assertIn("TV glow: driver available", output.getvalue())
+        factory.assert_called_once_with()
+        device.open.assert_called_once_with(0, 0)
+        device.writebytes.assert_not_called()
+        device.close.assert_called_once_with()
+
+    def test_spi_glow_writes_one_grb_frame_and_blacks_out_from_a_fresh_instance(self):
+        device, recovered_device = Mock(), Mock()
+        factory = Mock(side_effect=[device, recovered_device])
+        with patch.dict(sys.modules, {"spidev": SimpleNamespace(SpiDev=factory), "rpi_ws281x": None}):
+            outputs = PiOutputs(self.plugs, led_backend="spi", led_count=2)
+            factory.assert_not_called()
+            outputs.set_glow((0x40, 0x80, 0x01))
+            outputs.close()
+            recovery = PiOutputs(self.plugs, led_backend="spi", led_count=144)
+            recovery.set_glow((0, 0, 0))
+            recovery.close()
+
+        reset = b"\x00" * 256
+        green = b"\xf0" + b"\xc0" * 7
+        red = b"\xc0\xf0" + b"\xc0" * 6
+        blue = b"\xc0" * 7 + b"\xf0"
+        device.writebytes.assert_called_once()
+        self.assertEqual(bytes(device.writebytes.call_args.args[0]), reset + (green + red + blue) * 2 + reset)
+        recovered_device.writebytes.assert_called_once()
+        self.assertEqual(bytes(recovered_device.writebytes.call_args.args[0]), reset + b"\xc0" * (24 * 144) + reset)
+        for spi_device in (device, recovered_device):
+            spi_device.open.assert_called_once_with(0, 0)
+            spi_device.close.assert_called_once_with()
+            self.assertEqual((spi_device.max_speed_hz, spi_device.bits_per_word, spi_device.mode), (6_400_000, 8, 0))
+            self.assertFalse(spi_device.lsbfirst)
+
+    def test_spi_glow_reports_missing_driver_or_device(self):
+        outputs = PiOutputs(self.plugs, led_backend="spi", led_count=1)
+        with patch.dict(sys.modules, {"spidev": None}):
+            with self.assertRaisesRegex(RuntimeError, "spidev"):
+                outputs.check_glow()
+        device = Mock()
+        device.open.side_effect = FileNotFoundError(2, "No such file or directory", "/dev/spidev0.0")
+        with patch.dict(sys.modules, {"spidev": SimpleNamespace(SpiDev=Mock(return_value=device))}):
+            with self.assertRaisesRegex((OSError, RuntimeError), "/dev/spidev0.0"):
+                outputs.check_glow()
+            with self.assertRaisesRegex((OSError, RuntimeError), "/dev/spidev0.0"):
+                outputs.set_glow((0, 0, 0))
+        device.writebytes.assert_not_called()
+
+    def test_cli_recover_retries_spi_blackout_after_failed_rehearsal(self):
+        black_frame = b"\x00" * 256 + b"\xc0" * 24 + b"\x00" * 256
+        relays = dict.fromkeys((f"http://{ip}" for ip in self.plugs.values()), False)
+        strip_lit = False
+
+        def rpc_request(origin, operation, data=None):
+            if operation == "Switch.Set":
+                previous = relays[origin]
+                relays[origin] = json.loads(data)["on"]
+                return json.dumps({"was_on": previous}).encode()
+            self.assertEqual(operation, "Switch.GetStatus?id=0")
+            return json.dumps({"output": relays[origin]}).encode()
+
+        def fail_blackout(frame):
+            nonlocal strip_lit
+            if bytes(frame) != black_frame:
+                strip_lit = True
+            elif strip_lit:
+                raise OSError("simulated SPI write failure")
+
+        faulty, recovered = Mock(), Mock()
+        faulty.writebytes.side_effect = fail_blackout
+        factory = Mock(return_value=faulty)
+        stop = Mock()
+        stop.is_set.return_value = stop.wait.return_value = False
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            config_path = path / "trip.toml"
+            config_path.write_text(LIGHTS_ONLY.read_text().replace("led_count = 0", 'led_backend = "spi"\nled_count = 1'))
+            state_dir = path / "state"
+            device_dir = path / "device"
+            reservation = device_dir / "outputs.json"
+            with (
+                patch.dict(sys.modules, {"spidev": SimpleNamespace(SpiDev=factory), "rpi_ws281x": None}),
+                patch.object(cli.state, "DEVICE_DIR", device_dir),
+                patch.object(cli.state, "hardware_directory", side_effect=cli.state.private_directory),
+                patch.object(cli, "_stop_event", return_value=stop),
+                patch("vacation_ghost.outputs._rpc_request", side_effect=rpc_request),
+                patch("vacation_ghost.engine.sleep"),
+                redirect_stderr(io.StringIO()) as error,
+                redirect_stdout(io.StringIO()) as output,
+            ):
+                command = ["--config", str(config_path)]
+                state_args = ["--state-dir", str(state_dir)]
+                with self.assertRaises(SystemExit) as exit_code:
+                    cli.main([*command, "rehearse", *state_args])
+                self.assertEqual(exit_code.exception.code, 1)
+                self.assertIn("shutdown unconfirmed", error.getvalue())
+                self.assertTrue(strip_lit)
+                self.assertFalse(any(relays.values()))
+                self.assertTrue(json.loads(reservation.read_text())["glow_pending"])
+
+                factory.return_value = recovered
+                recovered.writebytes.side_effect = lambda _: self.assertTrue(reservation.is_file())
+                self.assertEqual(cli.main([*command, "recover", *state_args]), 0)
+                self.assertIn("Shutdown confirmed.", output.getvalue())
+                recovered.open.assert_called_once_with(0, 0)
+                recovered.writebytes.assert_called_once_with(list(black_frame))
+                recovered.close.assert_called_once_with()
+                self.assertFalse(reservation.exists())
+                self.assertFalse(any(relays.values()))
 
     def test_play_sound_caps_digital_amplitude(self):
         player = Mock()

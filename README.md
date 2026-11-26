@@ -41,7 +41,7 @@ A lights-only setup uses a Raspberry Pi Zero 2 W, Pi 4, or Pi 5, two compatible 
 
 Install a verified release, enter your trip dates and plug addresses, then check both plugs with `doctor` and watch the lamps take turns with `rehearse`. Test power loss and recovery while you’re home before relying on the setup away. [Pi setup guide](docs/service.md#lights-only-quick-start) · [Lights-only example](examples/vacation.lights-only.toml)
 
-Add optional USB sound or TV glow after the lamp checks pass. The documented TV-glow driver covers Pi Zero 2 W and Pi 4. Pi 5 uses a different GPIO controller and needs a compatible LED driver. [Glow and sound hardware](docs/hardware.md#optional-glow-and-sound)
+Add optional USB sound or TV glow after the lamp checks pass. Preview 2 uses a PWM LED driver on Pi Zero 2 W and Pi 4. A development checkout can try a separate SPI LED driver on Pi 5. Physical LED testing is pending. [Glow and sound hardware](docs/hardware.md#optional-glow-and-sound) · [Pi 5 bench instructions](docs/service.md#try-pi-5-tv-glow-from-a-development-checkout)
 
 <details>
 <summary>Configuration reference</summary>
@@ -50,7 +50,7 @@ Add optional USB sound or TV glow after the lamp checks pass. The documented TV-
 | --- | --- |
 | `[trip]` | Set `start` and `end` to ISO 8601 timestamps with UTC offsets. Use an IANA `timezone` such as `Etc/UTC` for the routine and reports. |
 | `[routine]` | List the kitchen before the living room in `rooms`. Set local `sunset` from `15:00` to `22:00` and `bedtime` from `18:00` to `23:55`, with sunset earlier. When you set `latitude` and `longitude`, the routine calculates sunset and uses `sunset` as a fallback. An optional `seed` makes daily variation repeatable. |
-| `[hardware]` | For lights only, use `led_count = 0` and `volume = 0`. Glow uses `led_count` and the BCM `led_pin`. Audio uses `sounds_dir` (relative to the config or absolute) and supports volume up to `0.20`. |
+| `[hardware]` | For lights only, use `led_count = 0` and `volume = 0`. Preview 2 PWM glow uses `led_count` and BCM `led_pin = 18`. The Pi 5 development checkout uses `led_backend = "spi"` and BCM GPIO10 by default. Audio uses `sounds_dir` (relative to the config or absolute) and supports volume up to `0.20`. |
 | `[hardware.plugs]` | Give each room a different private IPv4 address such as `http://192.168.1.40` or bracketed unique-local IPv6 address such as `http://[fd00::40]`. |
 
 </details>

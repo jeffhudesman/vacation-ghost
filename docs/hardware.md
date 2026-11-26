@@ -22,15 +22,15 @@ Once the plugs are on your restricted local network, follow the [lights-only set
 
 Add either option after the lamp checks pass.
 
-The TV-glow recipe uses the pinned [`rpi-ws281x` 5.0.0 driver](https://pypi.org/project/rpi-ws281x/5.0.0/) on the Pi Zero 2 W and Pi 4. The Pi 5 has GPIO and PWM through its [RP1 controller](https://github.com/raspberrypi/documentation/blob/fe7c672593752469d928e89f8d87d99bb6bc0a25/documentation/asciidoc/computers/io-controllers/rp1.adoc#L13-L51), which needs an RP1-compatible LED driver. The two-lamp setup controls Shelly plugs over the local network.
+Preview 2 uses the pinned [`rpi-ws281x` 5.0.0 PWM driver](https://pypi.org/project/rpi-ws281x/5.0.0/) on Pi Zero 2 W and Pi 4. Pi 5 routes GPIO through its [RP1 controller](https://github.com/raspberrypi/documentation/blob/fe7c672593752469d928e89f8d87d99bb6bc0a25/documentation/asciidoc/computers/io-controllers/rp1.adoc#L13-L51). The development checkout uses RP1’s SPI0 for Pi 5 glow. Physical glow testing is pending on all models.
 
 | Quantity | Part | Notes |
 | --- | --- | --- |
-| 1 | WS2812B-compatible 5 V GRB strip | For TV glow on a Pi Zero 2 W or Pi 4. Use an 800 kHz strip and BCM GPIO18 on physical header pin 12. About 30 pixels is a starting point for a reflected glow. [Wiring diagram](#wire-the-optional-led-strip) |
+| 1 | WS2812B-compatible 5 V GRB strip | Choose an 800 kHz strip. About 30 pixels is a starting point for a reflected glow. The Pi 5 development backend accepts up to 144 pixels. Follow the [wiring guide](#wire-the-optional-led-strip) for the data pin. |
 | 1 each | 5 V strip power supply and 3.3 V-to-5 V logic level shifter | Choose a unidirectional logic buffer rated for the strip’s data rate, such as a 74AHCT125. Provide suitable low-voltage wiring and strain relief. |
-| 1 each | USB audio adapter and powered speaker | For household sounds. The Pi Zero 2 W may need a USB OTG adapter or powered hub. A physical volume control makes quiet playback easier to set. |
+| 1 each | USB audio adapter and powered speaker | For household sounds on Pi Zero 2 W, Pi 4, or Pi 5. The Pi Zero 2 W may need a USB OTG adapter or powered hub. A physical volume control makes quiet playback easier to set. |
 
-Use the [glow and audio setup instructions](service.md#optional-tv-glow-and-sound) to add these outputs.
+Use the [Preview 2 glow and audio setup instructions](service.md#optional-tv-glow-and-sound) or the [Pi 5 glow bench instructions](service.md#try-pi-5-tv-glow-from-a-development-checkout).
 
 ## Restrict plug access
 
@@ -44,16 +44,24 @@ Reserve both plugs for Vacation Ghost. Disable their auto-on timers, stock sched
 | --- | --- | --- |
 | Simulator | Linux with Python 3.11 or later and the IANA time-zone database | Covered by automated tests and a [Preview 2 run on a Raspberry Pi 5](#raspberry-pi-5-simulator-test). |
 | Lights only | Pi Zero 2 W, Pi 4, or Pi 5 and two Shelly Gen2 or Gen3 plugs using local `Shelly.GetDeviceInfo`, `Switch.GetStatus`, and `Switch.Set` | Complete the physical checklist on your Pi, plug models, and firmware. |
-| TV glow | Documented `rpi-ws281x` 5.0.0 setup for Pi Zero 2 W or Pi 4, using PWM channel 0 on BCM GPIO18 and a WS2812B-compatible GRB strip | Complete the physical checklist on your Pi and OS image. |
-| Sound | ALSA `aplay`, a system-visible default USB audio device, and a powered speaker | Verify playback under the installed systemd unit. |
+| TV glow in Preview 2 | Pi Zero 2 W or Pi 4, `rpi-ws281x` 5.0.0, PWM channel 0 on BCM GPIO18 | Complete the physical checklist on your Pi and OS image. |
+| TV glow in a development checkout | Pi 5, Linux `spidev`, SPI0 MOSI on BCM GPIO10 | Physical testing pending. Start with a [bench rehearsal](service.md#try-pi-5-tv-glow-from-a-development-checkout). |
+| Sound | Pi Zero 2 W, Pi 4, or Pi 5, ALSA `aplay`, a system-visible default USB audio device, and a powered speaker | Verify playback under the installed systemd unit. |
 
 ## Wire the optional LED strip
 
 Disconnect both power supplies before wiring. The strip’s regulated 5 V supply powers the strip and logic buffer. Size the supply and wires to the strip’s rated maximum current. For example, 30 pixels rated at 60 mA each can draw 1.8 A. Follow the strip and buffer manufacturers’ wiring and protection guidance.
 
+| LED driver | Pi data signal | Physical header pin |
+| --- | --- | --- |
+| Preview 2 PWM on Pi Zero 2 W or Pi 4 | BCM GPIO18 | 12 |
+| Development SPI on Pi 5 | SPI0 MOSI, BCM GPIO10 | 19 |
+
+For SPI, connect only MOSI as the data signal through the level shifter. Reserve all of SPI0 for the strip. It sees MOSI data sent to either chip select. [Raspberry Pi SPI pin mappings](https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#spi-overview)
+
 ```mermaid
 flowchart LR
-    Pi["BCM GPIO18 · physical pin 12"] -->|3.3 V data| Buffer["5 V logic buffer"]
+    Pi["Pi data pin from the table"] -->|3.3 V data| Buffer["5 V logic buffer"]
     Buffer -->|5 V data| Strip["LED strip DIN"]
     PS["Regulated strip 5 V supply"] -->|5 V| Buffer
     PS -->|5 V| Strip
@@ -65,7 +73,7 @@ flowchart LR
 
 Power the Pi from its own supply. Share ground between the Pi, buffer, strip, and strip supply. Keep the 5 V output rails separate. A 74AHCT125 needs its selected channel’s output enable held low. Connect the buffer output to the strip’s input end, following the arrow on the strip. Keep all mains power inside enclosed, correctly rated supplies and smart plugs. Point the strip at curtains or a light-colored wall for an indirect glow.
 
-Onboard PWM audio can conflict with the LED driver. If it does, set `dtparam=audio=off` in `/boot/firmware/config.txt` on Raspberry Pi OS and reboot. Use a USB audio adapter with a [system-visible ALSA default](service.md#optional-tv-glow-and-sound) and test playback under the installed unit.
+Onboard PWM audio can conflict with Preview 2’s PWM LED driver. If it does, set `dtparam=audio=off` in `/boot/firmware/config.txt` on Raspberry Pi OS and reboot. Use a USB audio adapter with a [system-visible ALSA default](service.md#optional-tv-glow-and-sound) and test playback under the installed unit.
 
 ## Raspberry Pi 5 simulator test
 

@@ -373,7 +373,7 @@ To switch to lights-only, set `led_count = 0` and `volume = 0` in `/etc/vacation
 
 For a first build, start with the [lights-only hardware checks](#verify-the-setup-while-home). To add glow or sound to a lights-only installation, follow the [profile change procedure](#upgrade-or-switch-profiles) to switch to the base service. For a fresh base installation, [prepare the Pi](#prepare-the-pi-and-plugs), [install the release](#install-from-a-verified-release), and [set the trip and plug addresses](#set-the-trip-and-plug-addresses) before configuring the optional outputs below. The base service uses the root account.
 
-The documented TV-glow setup uses the `rpi-ws281x` PWM driver on a Pi Zero 2 W or Pi 4. See the [LED driver and board requirements](hardware.md#optional-glow-and-sound). In `[hardware]`, set `led_count` to the number of connected pixels and use `led_pin = 18` for BCM GPIO18 on physical header pin 12. This recipe uses PWM channel 0 and an 800 kHz GRB strip. The base service runs as root for PWM/DMA access. If your OS offers a compatible distribution-signed driver package, install it through the OS package manager and run `sudo /usr/bin/python3 -I -m venv --system-site-packages /opt/vacation-ghost/.venv` so the service can load it. [Wiring guide](hardware.md#wire-the-optional-led-strip)
+Preview 2’s TV-glow setup uses the `rpi-ws281x` PWM driver on a Pi Zero 2 W or Pi 4. See the [LED driver and board requirements](hardware.md#optional-glow-and-sound) and the separate [Pi 5 bench instructions](#try-pi-5-tv-glow-from-a-development-checkout). In `[hardware]`, set `led_count` to the number of connected pixels and use `led_pin = 18` for BCM GPIO18 on physical header pin 12. This recipe uses PWM channel 0 and an 800 kHz GRB strip. The base service runs as root for PWM/DMA access. If your OS offers a compatible distribution-signed driver package, install it through the OS package manager and run `sudo /usr/bin/python3 -I -m venv --system-site-packages /opt/vacation-ghost/.venv` so the service can load it. [Wiring guide](hardware.md#wire-the-optional-led-strip)
 
 At the pinned release, [PyPI lists `rpi-ws281x` 5.0.0 as a source distribution](https://pypi.org/project/rpi-ws281x/5.0.0/#files). Build its wheel as an ordinary user on the target Pi and OS. The [checked-in requirements file](../deploy/rpi-ws281x-source.txt) pins the upstream source URL and digest. These instructions use compiler and Python build tools from signed OS repositories.
 
@@ -413,6 +413,89 @@ sudo /opt/vacation-ghost/.venv/bin/python -I /opt/vacation-ghost/tools/generate_
 ```
 
 Follow [Check and start](#check-and-start) with `service_user=root`, then run a short scheduled test trip under the systemd unit. Choose a window with the glow or sound cues you enabled. Observe the outputs and check `latest.json` and the unit journal for faults. The foreground rehearsal uses the same account, and the systemd test exercises the unit’s filesystem and device settings. Disarm and verify shutdown before [preparing the real trip](#stop-recover-or-change-trips). [Physical checklist](hardware.md#physical-release-checklist)
+
+### Try Pi 5 TV glow from a development checkout
+
+Use a Raspberry Pi 5 with Raspberry Pi OS, two configured Shelly plugs, and an 800 kHz WS2812B-compatible GRB strip. This bench procedure uses the SPI backend in the development checkout. Preview 2 uses the PWM recipe above. Physical testing of the SPI backend is pending.
+
+Start with a Pi that has no running Vacation Ghost installation. If you already have one, confirm shutdown using its original config and state, then disable and stop the unit. This test runs as root and shares the device reservation at `/var/lib/vacation-ghost/device`. Follow the [profile change procedure](#upgrade-or-switch-profiles) if a different service account owns the existing state. Keep the bench test separate from the scheduled unit.
+
+With both power supplies disconnected, [wire the strip](hardware.md#wire-the-optional-led-strip) using BCM GPIO10 on header pin 19. Reserve all of SPI0 for the strip. Check the wiring, then reconnect both supplies. Check that your Raspberry Pi OS repository has a candidate for `python3-spidev`.
+
+```sh
+sudo apt-get update
+apt-cache policy python3-spidev
+```
+
+Install the packages from the OS repository and enable SPI. Confirm both lamps and the strip are off before rebooting the Pi.
+
+```sh
+(
+  set -eu
+  sudo apt-get install -y git python3-spidev tzdata
+  sudo raspi-config nonint do_spi 0
+  sudo reboot
+)
+```
+
+After reboot, check that Linux exposes SPI0 and that its system Python can import the adapter. Clone `main`, record the commit, and review the code before staging the files that will run as root.
+
+```sh
+test -c /dev/spidev0.0
+/usr/bin/python3 -I -c 'import spidev; print(spidev.__file__)'
+spi_checkout=$(mktemp -d /tmp/vacation-ghost-spi-source.XXXXXX)
+git clone --depth 1 --branch main https://github.com/jeffhudesman/vacation-ghost.git "$spi_checkout"
+git -C "$spi_checkout" log -1 --oneline
+```
+
+In the same shell, stage the reviewed code and a private config in a separate root-owned directory.
+
+```sh
+spi_app=$(
+  set -eu
+  target=$(sudo mktemp -d /opt/vacation-ghost-spi.XXXXXX)
+  sudo install -d -o root -g root -m 0700 "$target/vacation_ghost"
+  sudo install -o root -g root -m 0644 "${spi_checkout:?}"/vacation_ghost/*.py "$target/vacation_ghost/"
+  sudo install -o root -g root -m 0600 \
+    "$spi_checkout/examples/vacation.lights-only.toml" "$target/vacation.toml"
+  printf '%s\n' "$target"
+)
+```
+
+Run `sudoedit "${spi_app:?}/vacation.toml"`. Enter your two plug addresses and trip settings. In the existing `[hardware]` section, set the SPI backend and use the actual count of connected pixels, up to 144. Leave `led_pin` unset to use BCM GPIO10. Keep `volume = 0` for the first glow rehearsal.
+
+```toml
+[hardware]
+led_backend = "spi"
+led_count = 30
+volume = 0
+```
+
+Run `doctor` to check SPI0 adapter access and reachability for both plugs without sending an LED frame. Then run a foreground rehearsal while you are home. Save the two printed paths.
+
+```sh
+rehearsal_dir=$(sudo mktemp -d "${spi_app:?}/rehearsal.XXXXXX")
+printf 'Bench config is in %s/vacation.toml\nRehearsal state is in %s\n' "$spi_app" "$rehearsal_dir"
+sudo sh -c '
+  set -eu
+  cd "$1"
+  /usr/bin/python3 -Es -m vacation_ghost --config "$1/vacation.toml" doctor
+  exec /usr/bin/python3 -Es -m vacation_ghost --config "$1/vacation.toml" rehearse --state-dir "$2"
+' sh "${spi_app:?}" "${rehearsal_dir:?}"
+```
+
+Watch both lamps and the strip. Check TV glow, color, and the final blackout. Record the Pi OS and kernel versions, development commit, strip model, and observations in the [physical checklist](hardware.md#physical-release-checklist). Keep the scheduled unit disabled during the bench test.
+
+If shutdown is unconfirmed, leave the original config, wiring, and state in place. Inspect the outputs and fix the connection issue. Retry `recover` with the same bench paths.
+
+```sh
+sudo sh -c '
+  cd "$1" || exit
+  exec /usr/bin/python3 -Es -m vacation_ghost --config "$1/vacation.toml" recover --state-dir "$2"
+' sh "${spi_app:?}" "${rehearsal_dir:?}"
+```
+
+If needed, set `spi_app` and `rehearsal_dir` from the saved paths before running recovery in a new shell. Confirm both lamps and the strip are off before changing the configuration, removing bench files, or restarting the scheduled unit. If shutdown remains unconfirmed, follow the [manual shutdown procedure](#stop-recover-or-change-trips).
 
 ## Read reports locally
 
