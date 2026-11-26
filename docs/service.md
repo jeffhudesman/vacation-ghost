@@ -58,7 +58,7 @@ release_dir=$(mktemp -d /tmp/vacation-ghost-release.XXXXXX)
 )
 ```
 
-Check that `Verified release commit` shows the same full commit ID as the release notes. The next block installs the app from the staged release and opens its private configuration in your editor.
+Check that `Verified release commit` shows the same full commit ID as the release notes. The next block installs the app from the staged release and creates the private configuration if needed.
 
 ```sh
 (
@@ -80,7 +80,6 @@ Check that `Verified release commit` shows the same full commit ID as the releas
   if ! sudo test -e /etc/vacation-ghost/vacation.toml; then
     sudo install -o root -g root -m 0600 "$release_dir/examples/vacation.lights-only.toml" /etc/vacation-ghost/vacation.toml
   fi
-  sudoedit /etc/vacation-ghost/vacation.toml
 )
 ```
 
@@ -98,6 +97,12 @@ timezone = "America/New_York"
 A timestamp ending in `Z` is UTC even if you change `timezone`. Set a future departure while commissioning the Pi. The fixed fallback sunset must be earlier than bedtime. When an optional local sunset calculation yields a short evening, the schedule may shorten or skip its evening activity.
 
 In `[hardware.plugs]`, match the keys to the two names in `routine.rooms` and give each a different plug. Use a private IPv4 address such as `http://192.168.1.20` or bracket a unique-local IPv6 address in a URL such as `http://[fd00::20]`. Keep glow and sound disabled for the first install. The Pi contacts the plugs only over the restricted LAN. Keep real trip settings and plug addresses in the private Pi config or an ignored `.local/` directory during development. [Lights-only example](../examples/vacation.lights-only.toml)
+
+Open the configuration and make those changes.
+
+```sh
+sudoedit /etc/vacation-ghost/vacation.toml
+```
 
 Before saving, confirm both addresses are distinct, the departure is in the future, and `led_count` and `volume` are both `0`.
 
@@ -147,28 +152,72 @@ Run the checks from the root-owned install. These commands use the lights-only `
 
 For lights only, `doctor` should show the current state of both plugs, with TV glow and sound listed as disabled. Watch the rehearsal to confirm the lamps take turns and both turn off at the end.
 
-Install the unit from the verified release after rehearsal succeeds. Keep the configured trip start in the future for this first check. The commands verify the unit, start it, and wait for a fresh idle status with no device faults or unconfirmed shutdown. Look for `Vacation Ghost is idle and waiting for departure` before the unit is enabled at boot.
+Install the unit from the verified release after rehearsal succeeds. Keep the departure far enough in the future to finish this check while the trip is idle. The commands require a stopped unit, start a new service invocation, and wait for a fresh idle status for the configured trip. Look for `Vacation Ghost is idle and waiting for departure` before the unit is enabled at boot.
 
 ```sh
 (
   set -eu
   service_user=vacation-ghost
+  unit=vacation-ghost.service
   cd /opt/vacation-ghost
   sudo install -o root -g root -m 0644 /opt/vacation-ghost/deploy/vacation-ghost.service /etc/systemd/system/vacation-ghost.service
   sudo systemd-analyze verify /etc/systemd/system/vacation-ghost.service
   sudo systemctl daemon-reload
-  unit_user=$(sudo systemctl show --property=User --value vacation-ghost.service)
+  unit_user=$(sudo systemctl show --property=User --value "$unit")
   if [ "${unit_user:-root}" != "$service_user" ]; then
     printf 'Expected service account %s, found %s. Check the installed profile.\n' \
       "$service_user" "${unit_user:-root}" >&2
     exit 1
   fi
+
+  unit_state=$(sudo systemctl show --property=ActiveState --value "$unit")
+  case "$unit_state" in
+    inactive|failed) ;;
+    *)
+      printf 'The service is %s. Follow the shutdown and retry instructions before commissioning again.\n' \
+        "$unit_state" >&2
+      exit 1
+      ;;
+  esac
+  previous_restarts=$(sudo systemctl show --property=NRestarts --value "$unit")
+  if [ "$unit_state" = failed ] || [ "$previous_restarts" != 0 ]; then
+    sudo systemctl reset-failed "$unit"
+  fi
+  previous_invocation=$(sudo systemctl show --property=InvocationID --value "$unit")
+
+  expected_trip=$(sudo -u "$service_user" -g "$service_user" /opt/vacation-ghost/.venv/bin/python \
+    - /etc/vacation-ghost/vacation.toml <<'PY'
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+from vacation_ghost.config import load_config
+from vacation_ghost.reports import trip_identity
+
+config = load_config(Path(sys.argv[1]))
+if config.start <= datetime.now(UTC):
+    raise SystemExit("Set a future departure before starting the service.")
+print(trip_identity(config.start, config.end))
+PY
+  )
   status_file=/var/lib/vacation-ghost/current/latest.json
   previous_inode=$(sudo -u "$service_user" -g "$service_user" stat -c '%i' "$status_file" 2>/dev/null || true)
   started_at=$(/usr/bin/python3 -c 'import time; print(time.time())')
-  sudo systemctl start vacation-ghost.service
-  if ! sudo -u "$service_user" -g "$service_user" /opt/vacation-ghost/.venv/bin/python \
-    - "$status_file" "$previous_inode" "$started_at" <<'PY'
+
+  commissioning_failed() {
+    printf 'Commissioning failed. Follow the shutdown and retry instructions below.\n' >&2
+    sudo journalctl -u "$unit" -n 40 --no-pager || true
+    exit 1
+  }
+
+  sudo systemctl start "$unit" || commissioning_failed
+  invocation=$(sudo systemctl show --property=InvocationID --value "$unit") || commissioning_failed
+  case "$invocation" in
+    ""|00000000000000000000000000000000|"$previous_invocation") commissioning_failed ;;
+  esac
+
+  if ! idle_at=$(sudo -u "$service_user" -g "$service_user" /opt/vacation-ghost/.venv/bin/python \
+    - "$status_file" "$previous_inode" "$started_at" "$expected_trip" <<'PY'
 import json
 import os
 import sys
@@ -176,7 +225,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-path, previous_inode, started_at = sys.argv[1:]
+path, previous_inode, started_at, expected_trip = sys.argv[1:]
 deadline = time.monotonic() + 35
 while time.monotonic() < deadline:
     try:
@@ -195,29 +244,38 @@ while time.monotonic() < deadline:
         fresh = False
     if fresh:
         if (
-            status.get("active") is False
+            status.get("trip_id") == expected_trip
+            and status.get("active") is False
             and status.get("disarmed") is False
             and status.get("completed") is False
             and status.get("shutdown_unconfirmed") is False
             and status.get("device_faults") == 0
         ):
-            print(f"Vacation Ghost is idle and waiting for departure ({updated_at.isoformat()}).")
+            print(updated_at.isoformat())
             break
-        raise SystemExit("Fresh status did not show a healthy scheduled trip waiting for departure.")
+        raise SystemExit("Fresh status did not show the expected trip waiting without device faults.")
     time.sleep(1)
 else:
     raise SystemExit("No fresh Vacation Ghost status was written within 35 seconds.")
 PY
-  then
-    sudo journalctl -u vacation-ghost.service -n 40 --no-pager
-    exit 1
+  ); then
+    commissioning_failed
   fi
-  sudo systemctl is-active --quiet vacation-ghost.service
-  sudo systemctl enable vacation-ghost.service
+  current_invocation=$(sudo systemctl show --property=InvocationID --value "$unit") || commissioning_failed
+  current_restarts=$(sudo systemctl show --property=NRestarts --value "$unit") || commissioning_failed
+  if [ "$current_invocation" != "$invocation" ] ||
+     [ "$current_restarts" != 0 ] ||
+     ! sudo systemctl is-active --quiet "$unit"; then
+    commissioning_failed
+  fi
+  printf 'Vacation Ghost is idle and waiting for departure (%s).\n' "$idle_at"
+  sudo systemctl enable "$unit"
 )
 ```
 
-If the check fails, read `sudo journalctl -u vacation-ghost.service -n 40 --no-pager` and check the current status before trying again. The unit uses `/var/lib/vacation-ghost/current` for trip state and `/var/lib/vacation-ghost/device` for its device reservation. Preserve both across restarts. A scheduled end sets `completed`, and an early stop requested with `disarm` sets `disarmed`. Both prevent that trip from starting again after reboot. A true `shutdown_unconfirmed` means the controller has yet to confirm that all required outputs are off. Inspect the lamps and use the recovery procedure when needed. [Stop or recover](#stop-recover-or-change-trips)
+If the check fails, the unit may still be running. Inspect `sudo systemctl status vacation-ghost.service`, the journal, and the status with `sudo cat /var/lib/vacation-ghost/current/latest.json`. Keep the original config, trip state, and device reservation while you verify shutdown. If the trip is active or you cannot confirm it stayed idle, follow [Stop, recover, or change trips](#stop-recover-or-change-trips) to disarm it and handle any unconfirmed shutdown. If it stayed idle before departure, reports no pending shutdown, and the outputs are off, stop it with `sudo systemctl stop vacation-ghost.service`.
+
+Retry only after the unit is stopped and the outputs are confirmed off. If you disarmed the trip, it completed, or you need to change its dates, follow [Start a new trip](#start-a-new-trip) to archive `current` first. The unit uses `/var/lib/vacation-ghost/device` for its device reservation. Preserve it across retries.
 
 ### Verify the setup while home
 
@@ -252,13 +310,30 @@ If shutdown is unconfirmed, stop an installed scheduled service with `sudo syste
 
 If recovery reports a damaged device reservation, leave the reservation, trip state, and original config together. Turn both plugs off using their local switches, disconnect power from the LED strip if fitted, and stop any remaining playback. Check the outputs directly and get help with the damaged record before starting another trip.
 
-After confirmed shutdown, disable the unit if you want to prevent startup at boot. To prepare a new trip, stop the unit, archive `current` under a fresh name, edit the dates, and run the setup checks before starting again. The service creates the next trip's `current` directory.
+After confirmed shutdown, disable the unit if you want to prevent startup at boot.
+
+### Start a new trip
+
+After shutdown is confirmed, stop the unit and archive `current` under a fresh name. Keep `/var/lib/vacation-ghost/device` in place. A disarmed or completed trip stays finished after reboot. Changing dates while reusing its state directory prevents startup.
+
+```sh
+(
+  set -eu
+  if sudo test -d /var/lib/vacation-ghost/current; then
+    trip_backup=$(sudo mktemp -d /var/lib/vacation-ghost/trip-previous.XXXXXX)
+    sudo mv -T /var/lib/vacation-ghost/current "$trip_backup/current"
+    printf 'Previous trip saved in %s\n' "$trip_backup/current"
+  fi
+)
+```
+
+Set the new trip dates and run [Check and start](#check-and-start) again. The service creates a fresh `current` directory.
 
 ## Upgrade or switch profiles
 
 Before changing the installed files, unit, or output configuration, confirm that the old deployment has finished shutting down. Use its existing service account, original config, and original state directory. If the service is running, disarm it and wait for it to finish. Use `recover` for an unconfirmed shutdown. Then disable and stop the unit with `sudo systemctl disable --now vacation-ghost.service`.
 
-For an upgrade, keep `/etc/vacation-ghost` and `/var/lib/vacation-ghost` in place. Save the old application directory so the new install starts with a fresh app and virtual environment. Reinstall the optional driver and regenerate or restore any trusted audio cues used by the configuration. Check the new release with `doctor` and `rehearse` before enabling the unit again.
+For an upgrade with the same service profile, keep `/etc/vacation-ghost` and `/var/lib/vacation-ghost/device` in place. With the unit stopped and shutdown confirmed, follow [Start a new trip](#start-a-new-trip) to archive the previous trip’s `current` directory and set a new future departure and return. Save the old application directory so the new install starts with a fresh app and virtual environment. Reinstall the optional driver and regenerate or restore any trusted audio cues used by the configuration. Follow [Check and start](#check-and-start) to commission the new release.
 
 ```sh
 (
@@ -341,7 +416,7 @@ Follow [Check and start](#check-and-start) with `service_user=root`, then run a 
 
 ## Read reports locally
 
-The Pi saves the previous evening’s note at 8 AM in the trip’s time zone on mornings during the trip. It writes a local JSON file at `/var/lib/vacation-ghost/current/daily/YYYY-MM-DD.json`, where `YYYY-MM-DD` is the delivery date. Replace this sample date with the note you want to read. Use `root` for the user and group if running the base service. Read the `message` field for the summary.
+The previous evening’s note is due at 8 AM in the trip’s time zone on mornings during the trip. If the service is stopped then, it can publish a due note when it runs again. The report is a local JSON file at `/var/lib/vacation-ghost/current/daily/YYYY-MM-DD.json`, where `YYYY-MM-DD` is the delivery date. Replace this sample date with the note you want to read. Use `root` for the user and group if running the base service. Read the `message` field for the summary.
 
 ```sh
 delivery_date=2030-06-11

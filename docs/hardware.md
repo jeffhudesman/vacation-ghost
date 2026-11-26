@@ -1,21 +1,34 @@
 # Build a Vacation Ghost
 
-Start with two switched lamps. The LED strip adds TV glow, and USB audio adds household sounds. Test each output while you’re home before relying on it for a trip.
+Start with two switched lamps. Test your setup while you’re home before relying on it for a trip.
+
+## Before buying
+
+- **Check the plug model and firmware.** Look for a Shelly Gen2 or Gen3 plug with local control on switch channel 0, a built-in auto-off timer, and the option to stay off when power returns. Match your outlet type and the lamp’s load. [Hardware compatibility](#hardware-compatibility)
+- **Try the lamps you own.** Leave each lamp’s switch on, unplug it, then plug it back in. It should light up as soon as it gets power.
+- **Check your network.** You’ll need to reserve two plug addresses and limit access to the Pi and trusted administrators. [Restrict plug access](#restrict-plug-access)
 
 ## Parts
 
 | Quantity | Part | Notes |
 | --- | --- | --- |
 | 1 | Raspberry Pi Zero 2 W, Pi 4, or Pi 5 | For the lights-only setup. Use a compatible regulated Pi power supply, microSD card, and ventilated case. Run current Raspberry Pi OS with Python 3.11 or later. |
-| 2 | Shelly Gen2 or Gen3 plugs | Two distinct devices with local `Shelly.GetDeviceInfo` and switch channel 0. Match your outlet type and the lamp’s load. Reserve a different RFC 1918 IPv4 or unique-local IPv6 address for each plug. |
-| 2 | Lamps | Use lamps that light when outlet power returns. Confirm they do so during the rehearsal. |
-| 1 | WS2812B-compatible 5 V GRB strip | Optional for Pi Zero 2 W or Pi 4. Use an 800 kHz strip and BCM GPIO18 on physical header pin 12. About 30 pixels is a starting point for a reflected glow. |
-| 1 each | 5 V strip power supply and 3.3 V-to-5 V logic level shifter | For the optional strip. Choose a unidirectional logic buffer rated for the strip’s data rate, such as a 74AHCT125. Provide suitable low-voltage wiring and strain relief. |
-| 1 each | USB audio output and powered speaker | Optional. The Pi Zero 2 W may need a USB OTG adapter or powered hub. A physical volume control makes quiet playback easier to set. |
+| 2 | Shelly Gen2 or Gen3 plugs | Use two distinct compatible devices. Reserve a different RFC 1918 IPv4 or unique-local IPv6 address for each plug. |
+| 2 | Lamps | Reuse lamps that light when outlet power returns. Confirm they do so during rehearsal. |
 
-For a lights-only build, set up the Pi and two plugs and reuse your lamps and router. Once the plugs are on the local network, follow the [Pi setup guide](service.md#lights-only-quick-start).
+Once the plugs are on your restricted local network, follow the [lights-only setup guide](service.md#lights-only-quick-start).
 
-Before buying plugs, check that your models support the [local controls listed below](#hardware-compatibility), power-restore off, and a built-in auto-off timer. Check that you can [restrict access to the plugs](#restrict-plug-access) on your network. To test a lamp you already own, leave its switch in the on position, disconnect it from power, and confirm that it lights when you reconnect it.
+## Optional glow and sound
+
+Add either option after the lamp checks pass.
+
+| Quantity | Part | Notes |
+| --- | --- | --- |
+| 1 | WS2812B-compatible 5 V GRB strip | For TV glow on a Pi Zero 2 W or Pi 4. Use an 800 kHz strip and BCM GPIO18 on physical header pin 12. About 30 pixels is a starting point for a reflected glow. [Wiring diagram](#wire-the-optional-led-strip) |
+| 1 each | 5 V strip power supply and 3.3 V-to-5 V logic level shifter | Choose a unidirectional logic buffer rated for the strip’s data rate, such as a 74AHCT125. Provide suitable low-voltage wiring and strain relief. |
+| 1 each | USB audio adapter and powered speaker | For household sounds. The Pi Zero 2 W may need a USB OTG adapter or powered hub. A physical volume control makes quiet playback easier to set. |
+
+Use the [glow and audio setup instructions](service.md#optional-tv-glow-and-sound) to add these outputs.
 
 ## Restrict plug access
 

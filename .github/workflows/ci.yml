@@ -74,7 +74,7 @@ jobs:
           examples = {"examples/vacation.example.toml", "examples/vacation.lights-only.toml"}
           required = examples | {
               "LICENSE", "README.md", "CONTRIBUTING.md",
-              "docs/hardware.md", "docs/service.md", "docs/images/vacation-ghost-demo.gif",
+              "docs/hardware.md", "docs/service.md", "site/assets/house-at-dusk-1120.webp",
               "deploy/vacation-ghost.service", "deploy/lights-only.conf",
               "deploy/rpi-ws281x-source.txt", "tools/generate_sounds.py",
           }
