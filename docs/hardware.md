@@ -45,7 +45,7 @@ Reserve both plugs for Vacation Ghost. Disable their auto-on timers, stock sched
 | Simulator | Linux with Python 3.11 or later and the IANA time-zone database | Covered by automated tests and a [Preview 2 run on a Raspberry Pi 5](#raspberry-pi-5-simulator-test). |
 | Lights only | Pi Zero 2 W, Pi 4, or Pi 5 and two Shelly Gen2 or Gen3 plugs using local `Shelly.GetDeviceInfo`, `Switch.GetStatus`, and `Switch.Set` | Complete the physical checklist on your Pi, plug models, and firmware. |
 | TV glow in Preview 2 | Pi Zero 2 W or Pi 4, `rpi-ws281x` 5.0.0, PWM channel 0 on BCM GPIO18 | Complete the physical checklist on your Pi and OS image. |
-| TV glow from `main` | Pi 5, Linux `spidev`, SPI0 MOSI on BCM GPIO10 (physical pin 19), up to 144 pixels | Physical glow and blackout tests pending. Start with a [bench rehearsal](service.md#try-pi-5-tv-glow-from-a-development-checkout). |
+| TV glow from `main` | Pi 5, Linux `spidev`, SPI0 MOSI on BCM GPIO10 (physical pin 19), up to 144 pixels | Automated tests cover frame encoding and blackout recovery. Physical glow and blackout tests are pending. [Bench rehearsal](service.md#try-pi-5-tv-glow-from-a-development-checkout) |
 | Sound | Pi Zero 2 W, Pi 4, or Pi 5, ALSA `aplay`, a system-visible default USB audio device, and a powered speaker | Verify playback under the installed systemd unit. |
 
 ## Wire the optional LED strip
