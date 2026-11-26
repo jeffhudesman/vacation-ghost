@@ -6,10 +6,10 @@ Start with two switched lamps. The LED strip adds TV glow, and USB audio adds ho
 
 | Quantity | Part | Notes |
 | --- | --- | --- |
-| 1 | Raspberry Pi Zero 2 W or Pi 4 | With a compatible regulated Pi power supply, microSD card, and ventilated case. Use current Raspberry Pi OS with Python 3.11 or later. |
+| 1 | Raspberry Pi Zero 2 W, Pi 4, or Pi 5 | For the lights-only setup. Use a compatible regulated Pi power supply, microSD card, and ventilated case. Run current Raspberry Pi OS with Python 3.11 or later. |
 | 2 | Shelly Gen2 or Gen3 plugs | Two distinct devices with local `Shelly.GetDeviceInfo` and switch channel 0. Match your outlet type and the lamp’s load. Reserve a different RFC 1918 IPv4 or unique-local IPv6 address for each plug. |
 | 2 | Lamps | Use lamps that light when outlet power returns. Confirm they do so during the rehearsal. |
-| 1 | WS2812B-compatible 5 V GRB strip | Optional. Use an 800 kHz strip and BCM GPIO18 on physical header pin 12. About 30 pixels is a starting point for a reflected glow. |
+| 1 | WS2812B-compatible 5 V GRB strip | Optional for Pi Zero 2 W or Pi 4. Use an 800 kHz strip and BCM GPIO18 on physical header pin 12. About 30 pixels is a starting point for a reflected glow. |
 | 1 each | 5 V strip power supply and 3.3 V-to-5 V logic level shifter | For the optional strip. Choose a unidirectional logic buffer rated for the strip’s data rate, such as a 74AHCT125. Provide suitable low-voltage wiring and strain relief. |
 | 1 each | USB audio output and powered speaker | Optional. The Pi Zero 2 W may need a USB OTG adapter or powered hub. A physical volume control makes quiet playback easier to set. |
 
@@ -28,7 +28,7 @@ Reserve both plugs for Vacation Ghost. Disable their auto-on timers, stock sched
 | Setup | Intended compatibility | Verification |
 | --- | --- | --- |
 | Simulator | Linux with Python 3.11 or later and the IANA time-zone database | Covered by automated tests and a [Preview 2 run on a Raspberry Pi 5](#raspberry-pi-5-simulator-test). |
-| Lights | Two Shelly Gen2 or Gen3 plugs using local `Shelly.GetDeviceInfo`, `Switch.GetStatus`, and `Switch.Set` | Complete the physical checklist on your models and firmware. |
+| Lights only | Pi Zero 2 W, Pi 4, or Pi 5 and two Shelly Gen2 or Gen3 plugs using local `Shelly.GetDeviceInfo`, `Switch.GetStatus`, and `Switch.Set` | Complete the physical checklist on your Pi, plug models, and firmware. |
 | TV glow | Raspberry Pi Zero 2 W or Pi 4 with `rpi_ws281x`, PWM channel 0 on BCM GPIO18, and a WS2812B-compatible GRB strip | Complete the physical checklist on your Pi and OS image. |
 | Sound | ALSA `aplay`, a system-visible default USB audio device, and a powered speaker | Verify playback under the installed systemd unit. |
 
@@ -60,7 +60,7 @@ The `v0.1.0-preview.2` simulator ran the example trip through the morning of Jun
 
 ## Physical release checklist
 
-Physical testing of the Shelly plugs and lamps, optional LED and audio outputs, and service recovery after reboot is pending. Use this template to record a lights-only run on a Pi before relying on it for a trip. Keep local trip dates, addresses, device identifiers, and credentials out of shared reports. Share the release commit, models, firmware, and redacted observations.
+Physical testing is pending for the Shelly plugs and lamps, the optional LED and audio outputs, and automatic startup and trip recovery after a reboot. Use this template to record a lights-only run on a Pi before relying on it for a trip. Keep local trip dates, addresses, device identifiers, and credentials out of shared reports. Share the release commit, models, firmware, and redacted observations.
 
 | Bench record | Current record |
 | --- | --- |

@@ -1,10 +1,12 @@
 # Run Vacation Ghost at boot
 
-The service runs on the Pi, resumes the configured trip after a reboot, and attempts and reports shutdown at the trip’s end. The Preview 2 simulator ran on a Raspberry Pi 5. Physical testing of the Shelly plugs and lamps, optional LED and audio outputs, and service recovery after reboot is pending. Start with two switched lamps and use the [bench checklist](hardware.md#physical-release-checklist) before relying on the setup while away.
+The service attempts to turn off the outputs at trip end and reports whether shutdown was confirmed. When enabled at boot, it is designed to start automatically and resume an active trip after a reboot.
+
+The Preview 2 simulator ran on a Raspberry Pi 5. Physical testing is pending for the Shelly plugs and lamps, the optional LED and audio outputs, and automatic startup and trip recovery after a reboot. Start with two switched lamps and use the [bench checklist](hardware.md#physical-release-checklist) before relying on the setup while away.
 
 ## Lights-only quick start
 
-You’ll need a Pi running Raspberry Pi OS, a terminal with `sudo` access, two [compatible plugs](hardware.md#hardware-compatibility), and the ability to restrict access to the plugs on your local network. Use two lamps that turn on when power returns. If you already have an installation, see [how to upgrade or change profiles](#upgrade-or-switch-profiles) first.
+Use a Raspberry Pi Zero 2 W, Pi 4, or Pi 5 running Raspberry Pi OS. You’ll need a terminal with `sudo` access, two [compatible plugs](hardware.md#hardware-compatibility), and the ability to restrict access to the plugs on your local network. Use two lamps that turn on when power returns. If you already have an installation, see [how to upgrade or change profiles](#upgrade-or-switch-profiles) first.
 
 1. [Prepare the Pi and plugs](#prepare-the-pi-and-plugs).
 2. [Install from a verified release](#install-from-a-verified-release) and [set the trip and plug addresses](#set-the-trip-and-plug-addresses).

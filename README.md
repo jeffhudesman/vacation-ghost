@@ -1,6 +1,6 @@
 # Vacation Ghost
 
-**Developer preview.** The Preview 2 simulator ran successfully on a Raspberry Pi 5. Physical testing of the Shelly plugs and lamps, optional LED and audio outputs, and service recovery after reboot is pending. [Pi 5 test record](docs/hardware.md#raspberry-pi-5-simulator-test)
+**Developer preview.** The Preview 2 simulator ran successfully on a Raspberry Pi 5. Physical testing is pending for the Shelly plugs and lamps, the optional LED and audio outputs, and automatic startup and trip recovery after a reboot. [Pi 5 test record](docs/hardware.md#raspberry-pi-5-simulator-test)
 
 Vacation Ghost makes an empty house look lived-in while you’re away. A Raspberry Pi runs a local routine for two lamps, with optional TV-like glow from an LED strip and quiet household sounds from a USB audio setup. Evening activity starts near sunset, moves between rooms one lamp at a time, and winds down at a bedtime that varies each night. The Pi writes morning notes and a trip summary locally.
 
@@ -27,7 +27,7 @@ python3 -m unittest discover -s tests -v
 
 ## Set up the Raspberry Pi
 
-Use a Raspberry Pi and two Shelly Gen2 or Gen3 plugs on the local network. The LED strip and USB sound are optional. See the [parts list, wiring diagram, and physical checklist](docs/hardware.md) and the [systemd installation guide](docs/service.md) for a Pi that should resume after a reboot.
+A lights-only setup uses a Raspberry Pi Zero 2 W, Pi 4, or Pi 5 and two Shelly Gen2 or Gen3 plugs on the local network. See the [hardware guide](docs/hardware.md) for the parts list, optional glow and sound, and physical test checklist. The [systemd installation guide](docs/service.md) covers setting up the service to start at boot.
 
 The service guide covers installing a verified release, checking both plugs with `doctor`, and trying the outputs with `rehearse`. Start with the lights-only Pi example and add glow or sound after the lamp checks pass. [Service guide](docs/service.md) · [Lights-only example](examples/vacation.lights-only.toml)
 

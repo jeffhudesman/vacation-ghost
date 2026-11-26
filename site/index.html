@@ -150,7 +150,7 @@
       </div>
       <div class="parts-grid">
         <ul class="parts-list" role="list">
-          <li class="part"><div class="part-icon" aria-hidden="true">▤</div><div><h3>A Raspberry Pi kit</h3><p>Use a Pi Zero 2 W or Pi 4 with a power supply, a microSD card, and a case. It runs Raspberry Pi OS.</p></div></li>
+          <li class="part"><div class="part-icon" aria-hidden="true">▤</div><div><h3>A Raspberry Pi kit</h3><p>Use a Pi Zero 2 W, Pi 4, or Pi 5 with Raspberry Pi OS, a compatible power supply, a microSD card, and a case. The Pi 5 simulator test passed. Plug and lamp tests are pending.</p></div></li>
           <li class="part"><div class="part-icon" aria-hidden="true">⌁</div><div><h3>Two compatible smart plugs</h3><p>Check your exact Shelly Gen2 or Gen3 model and firmware for local RPC and switch channel 0. Confirm the firmware supports auto-off and can keep the plug off when power returns. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/hardware.md#hardware-compatibility">Check plug compatibility</a>.</p></div></li>
           <li class="part"><div class="part-icon" aria-hidden="true">◒</div><div><h3>Two lamps you already own</h3><p>Test each lamp by leaving its switch on, unplugging it, and plugging it back in. It should light up as soon as it gets power.</p></div></li>
           <li class="part"><div class="part-icon" aria-hidden="true">◇</div><div><h3>Control of your local network</h3><p>You’ll need to reserve two plug addresses and restrict access to the Pi and trusted administrators. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/hardware.md#restrict-plug-access">Set up your plug network</a>.</p></div></li>
@@ -162,11 +162,11 @@
       </div>
       <div class="parts-intro-tools">
         <a class="button button-primary" href="#setup-panel-pi">Go to Pi setup <span aria-hidden="true">↓</span></a>
-        <a class="text-link" href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/hardware.md">Full parts list and wiring guide <span class="arrow-up" aria-hidden="true"></span></a>
+        <a class="text-link" href="https://github.com/jeffhudesman/vacation-ghost/blob/main/docs/hardware.md#parts">Full parts list and wiring guide <span class="arrow-up" aria-hidden="true"></span></a>
       </div>
       <aside class="parts-optional" aria-labelledby="parts-optional-title">
         <h3 id="parts-optional-title">Optional glow and sound</h3>
-        <p>For TV glow, add a compatible 5 V LED strip, its power supply, and a logic level shifter. For sound, add a USB audio adapter and powered speaker.</p>
+        <p>For TV glow on a Pi Zero 2 W or Pi 4, add a compatible 5 V LED strip, its power supply, and a logic level shifter. For sound, add a USB audio adapter and powered speaker.</p>
       </aside>
     </section>
 
@@ -292,7 +292,7 @@ Sound: disabled</code></pre>
         <details>
           <summary>Is it ready for an unattended trip?</summary>
           <p>The Preview 2 simulator ran on a Raspberry Pi 5 with 64-bit Raspberry Pi OS and saved the sample trip’s June 11, 2030 morning report as local JSON. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/main/docs/hardware.md#raspberry-pi-5-simulator-test">See the simulator test results</a>.</p>
-          <p>Shelly plug and lamp control, optional LED and audio output, and automatic startup after a reboot still need physical testing. Complete the <a href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/hardware.md#physical-release-checklist">hardware checklist</a> on your own setup, including power and network outages, before relying on it while away.</p>
+          <p>Shelly plug and lamp control, optional LED and audio output, and automatic startup and trip recovery after a reboot still need physical testing. Complete the <a href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/hardware.md#physical-release-checklist">hardware checklist</a> on your own setup, including power and network outages, before relying on it while away.</p>
         </details>
       </div>
     </section>
