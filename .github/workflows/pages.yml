@@ -2,6 +2,9 @@ name: Deploy website
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/pages.yml]
 
 permissions: {}
 
@@ -11,7 +14,10 @@ concurrency:
 
 jobs:
   site:
-    if: github.ref == 'refs/heads/main'
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event.head_commit.message == 'Deploy Pi 5 parts update 250e154')
     permissions:
       contents: read
     uses: ./.github/workflows/site.yml
