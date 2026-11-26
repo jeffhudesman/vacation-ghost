@@ -22,7 +22,7 @@ Once the plugs are on your restricted local network, follow the [lights-only set
 
 Add either option after the lamp checks pass.
 
-Preview 2 uses the pinned [`rpi-ws281x` 5.0.0 PWM driver](https://pypi.org/project/rpi-ws281x/5.0.0/) on Pi Zero 2 W and Pi 4. Pi 5 routes GPIO through its [RP1 controller](https://github.com/raspberrypi/documentation/blob/fe7c672593752469d928e89f8d87d99bb6bc0a25/documentation/asciidoc/computers/io-controllers/rp1.adoc#L13-L51). The development checkout uses RP1’s SPI0 for Pi 5 glow. Physical glow testing is pending on all models.
+Preview 2 uses the `rpi-ws281x` 5.0.0 PWM driver on Pi Zero 2 W and Pi 4. The Pi 5 driver on `main` uses SPI0 on the RP1 controller and is available for bench testing. Physical glow and blackout tests are pending. [Preview 2 driver](https://pypi.org/project/rpi-ws281x/5.0.0/) · [Pi 5 RP1 controller](https://github.com/raspberrypi/documentation/blob/fe7c672593752469d928e89f8d87d99bb6bc0a25/documentation/asciidoc/computers/io-controllers/rp1.adoc#L13-L51)
 
 | Quantity | Part | Notes |
 | --- | --- | --- |
@@ -45,7 +45,7 @@ Reserve both plugs for Vacation Ghost. Disable their auto-on timers, stock sched
 | Simulator | Linux with Python 3.11 or later and the IANA time-zone database | Covered by automated tests and a [Preview 2 run on a Raspberry Pi 5](#raspberry-pi-5-simulator-test). |
 | Lights only | Pi Zero 2 W, Pi 4, or Pi 5 and two Shelly Gen2 or Gen3 plugs using local `Shelly.GetDeviceInfo`, `Switch.GetStatus`, and `Switch.Set` | Complete the physical checklist on your Pi, plug models, and firmware. |
 | TV glow in Preview 2 | Pi Zero 2 W or Pi 4, `rpi-ws281x` 5.0.0, PWM channel 0 on BCM GPIO18 | Complete the physical checklist on your Pi and OS image. |
-| TV glow in a development checkout | Pi 5, Linux `spidev`, SPI0 MOSI on BCM GPIO10 | Physical testing pending. Start with a [bench rehearsal](service.md#try-pi-5-tv-glow-from-a-development-checkout). |
+| TV glow from `main` | Pi 5, Linux `spidev`, SPI0 MOSI on BCM GPIO10 (physical pin 19), up to 144 pixels | Physical glow and blackout tests pending. Start with a [bench rehearsal](service.md#try-pi-5-tv-glow-from-a-development-checkout). |
 | Sound | Pi Zero 2 W, Pi 4, or Pi 5, ALSA `aplay`, a system-visible default USB audio device, and a powered speaker | Verify playback under the installed systemd unit. |
 
 ## Wire the optional LED strip

@@ -111,9 +111,13 @@ def check_source(page):
         elif url.startswith(f"{REPOSITORY}/blob/"):
             ref, path = parts.path.split("/blob/", 1)[1].split("/", 1)
             if ref == "main":
-                assert path in {"LICENSE", "CONTRIBUTING.md"} or (
-                    path == "docs/hardware.md"
-                    and parts.fragment in {"optional-glow-and-sound", "raspberry-pi-5-simulator-test"}
+                current_guides = {
+                    "docs/hardware.md": {"raspberry-pi-5-simulator-test"},
+                    "docs/service.md": {"try-pi-5-tv-glow-from-a-development-checkout"},
+                }
+                assert (
+                    path in {"LICENSE", "CONTRIBUTING.md"}
+                    or parts.fragment in current_guides.get(path, ())
                 ), url
                 content = (ROOT / path).read_text(encoding="utf-8")
             else:

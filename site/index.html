@@ -181,7 +181,8 @@
       </div>
       <details class="parts-optional">
         <summary>Optional glow and sound</summary>
-        <p>The TV-glow guide covers Pi Zero 2 W and Pi 4. Pi 5 needs a different LED driver. The 5 V strip needs its own power supply and a logic level shifter. For sound, add a USB audio adapter and powered speaker. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/main/docs/hardware.md#optional-glow-and-sound">See the glow and sound guide</a>.</p>
+        <p>TV glow uses a 5 V WS2812B-compatible GRB strip with its own power supply and a logic level shifter. The Preview 2 glow setup uses PWM on Pi Zero 2 W and Pi 4. For sound, add a USB audio adapter and powered speaker. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/service.md#optional-tv-glow-and-sound">Preview 2 glow and sound setup</a>.</p>
+        <p><strong>Pi 5 TV glow.</strong> The SPI driver is available on GitHub <code>main</code> for bench testing. It uses GPIO10 (physical pin 19) and accepts up to 144 pixels. Physical glow and blackout tests are pending. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/main/docs/service.md#try-pi-5-tv-glow-from-a-development-checkout">Try the Pi 5 glow setup</a>.</p>
       </details>
     </section>
 

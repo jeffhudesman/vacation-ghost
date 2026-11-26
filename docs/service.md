@@ -416,7 +416,7 @@ Follow [Check and start](#check-and-start) with `service_user=root`, then run a 
 
 ### Try Pi 5 TV glow from a development checkout
 
-Use a Raspberry Pi 5 with Raspberry Pi OS, two configured Shelly plugs, and an 800 kHz WS2812B-compatible GRB strip. This bench procedure uses the SPI backend in the development checkout. Preview 2 uses the PWM recipe above. Physical testing of the SPI backend is pending.
+Use a Raspberry Pi 5 with Raspberry Pi OS, two configured Shelly plugs, and an 800 kHz WS2812B-compatible GRB strip. This bench procedure uses the SPI driver from `main`. Preview 2 uses the PWM recipe above. Physical glow and blackout tests are pending.
 
 Start with a Pi that has no running Vacation Ghost installation. If you already have one, confirm shutdown using its original config and state, then disable and stop the unit. This test runs as root and shares the device reservation at `/var/lib/vacation-ghost/device`. Follow the [profile change procedure](#upgrade-or-switch-profiles) if a different service account owns the existing state. Keep the bench test separate from the scheduled unit.
 
