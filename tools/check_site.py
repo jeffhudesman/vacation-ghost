@@ -112,8 +112,8 @@ def check_source(page):
             ref, path = parts.path.split("/blob/", 1)[1].split("/", 1)
             if ref == "main":
                 current_guides = {
-                    "docs/hardware.md": {"raspberry-pi-5-simulator-test"},
-                    "docs/service.md": {"try-pi-5-tv-glow-from-a-development-checkout"},
+                    "docs/hardware.md": {"hardware-compatibility", "raspberry-pi-5-simulator-test"},
+                    "docs/service.md": {"lights-only-quick-start", "try-pi-5-tv-glow-from-a-development-checkout"},
                 }
                 assert (
                     path in {"LICENSE", "CONTRIBUTING.md"}

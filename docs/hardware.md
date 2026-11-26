@@ -4,7 +4,7 @@ Start with two switched lamps. Test your setup while you’re home before relyin
 
 ## Before buying
 
-- **Check the plug model and firmware.** Look for a Shelly Gen2 or Gen3 plug with local control on switch channel 0, a built-in auto-off timer, and the option to stay off when power returns. Match your outlet type and the lamp’s load. [Hardware compatibility](#hardware-compatibility)
+- **Check the plug model and firmware.** Look for a Shelly Gen2, Gen3, or Gen4 plug with local control on switch channel 0, a built-in auto-off timer, and the option to stay off when power returns. Match your outlet type and the lamp’s load. [Hardware compatibility](#hardware-compatibility)
 - **Try the lamps you own.** Leave each lamp’s switch on, unplug it, then plug it back in. It should light up as soon as it gets power.
 - **Check your network.** You’ll need to reserve two plug addresses and limit access to the Pi and trusted administrators. [Restrict plug access](#restrict-plug-access)
 
@@ -13,7 +13,7 @@ Start with two switched lamps. Test your setup while you’re home before relyin
 | Quantity | Part | Notes |
 | --- | --- | --- |
 | 1 | Raspberry Pi Zero 2 W, Pi 4, or Pi 5 | For the lights-only setup. Use a compatible regulated Pi power supply, microSD card, and ventilated case. Run current Raspberry Pi OS with Python 3.11 or later. |
-| 2 | Shelly Gen2 or Gen3 plugs | Use two distinct compatible devices. Reserve a different RFC 1918 IPv4 or unique-local IPv6 address for each plug. |
+| 2 | Compatible Shelly Gen2, Gen3, or Gen4 plugs | Use two distinct devices. Reserve a different RFC 1918 IPv4 or unique-local IPv6 address for each plug. |
 | 2 | Lamps | Reuse lamps that light when outlet power returns. Confirm they do so during rehearsal. |
 
 Once the plugs are on your restricted local network, follow the [lights-only setup guide](service.md#lights-only-quick-start).
@@ -43,10 +43,12 @@ Reserve both plugs for Vacation Ghost. Disable their auto-on timers, stock sched
 | Setup | Intended compatibility | Verification |
 | --- | --- | --- |
 | Simulator | Linux with Python 3.11 or later and the IANA time-zone database | Covered by automated tests and a [Preview 2 run on a Raspberry Pi 5](#raspberry-pi-5-simulator-test). |
-| Lights only | Pi Zero 2 W, Pi 4, or Pi 5 and two Shelly Gen2 or Gen3 plugs using local `Shelly.GetDeviceInfo`, `Switch.GetStatus`, and `Switch.Set` | Complete the physical checklist on your Pi, plug models, and firmware. |
+| Lights only | Pi Zero 2 W, Pi 4, or Pi 5 and two compatible Shelly Gen2, Gen3, or Gen4 plugs supporting local `Shelly.GetDeviceInfo` plus `Switch.GetStatus` and `Switch.Set` for channel 0 | Physical plug testing is pending. Complete the checklist on your Pi, plug models, and firmware. |
 | TV glow in Preview 2 | Pi Zero 2 W or Pi 4, `rpi-ws281x` 5.0.0, PWM channel 0 on BCM GPIO18 | Complete the physical checklist on your Pi and OS image. |
 | TV glow from `main` | Pi 5, Linux `spidev`, SPI0 MOSI on BCM GPIO10 (physical pin 19), up to 144 pixels | Automated tests cover frame encoding and blackout recovery. Physical glow and blackout tests are pending. [Bench rehearsal](service.md#try-pi-5-tv-glow-from-a-development-checkout) |
 | Sound | Pi Zero 2 W, Pi 4, or Pi 5, ALSA `aplay`, a system-visible default USB audio device, and a powered speaker | Verify playback under the installed systemd unit. |
+
+The **Shelly Plug US Gen4** (`S4PL-00116US`) is expected to work with the existing adapter over Wi-Fi. Verify auto-off and power-restore off independently of the Pi, then run `doctor` and `rehearse` with your exact model and firmware. [Shelly device profile](https://github.com/ALLTERCO/fleet-management/blob/6f1e3721b0958f5d6f75e71d43d317bba4fe1995/backend/src/devSimulation/profiles/gen4.ts#L198-L215) · [Physical checklist](#physical-release-checklist)
 
 ## Wire the optional LED strip
 

@@ -37,7 +37,7 @@ The trip runs from June 10 to 13, 2030 in UTC. To replay the entire trip and gen
 
 ## Set up the Raspberry Pi
 
-A lights-only setup uses a Raspberry Pi Zero 2 W, Pi 4, or Pi 5, two compatible Shelly Gen2 or Gen3 plugs, and two lamps that light up when power returns. You’ll need a local network whose plug access you can restrict. [Parts and compatibility](docs/hardware.md)
+A lights-only setup uses a Raspberry Pi Zero 2 W, Pi 4, or Pi 5, two compatible Shelly Gen2, Gen3, or Gen4 plugs, and two lamps that light up when power returns. You’ll need a local network whose plug access you can restrict. [Parts and compatibility](docs/hardware.md)
 
 Install a verified release, enter your trip dates and plug addresses, then check both plugs with `doctor` and watch the lamps take turns with `rehearse`. Test power loss and recovery while you’re home before relying on the setup away. [Pi setup guide](docs/service.md#lights-only-quick-start) · [Lights-only example](examples/vacation.lights-only.toml)
 
