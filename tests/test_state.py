@@ -106,3 +106,48 @@ class StateSecurityTests(unittest.TestCase):
             legacy = OutputReservation(state, device, hardware_id="original")
             self.assertTrue(legacy.engaged)
             self.assertTrue(legacy.glow_pending)
+
+    def test_reservation_persists_distinct_plug_identities(self):
+        with TemporaryDirectory() as root:
+            state, device = Path(root) / "trip", Path(root) / "device"
+            state.mkdir()
+            device.mkdir()
+            identities = {"kitchen": "001122334455", "living": "001122334466"}
+            invalid = OutputReservation(
+                state, device, hardware_id="original", identify_plugs=lambda: dict.fromkeys(identities, "001122334455"),
+            )
+            with self.assertRaisesRegex(InvalidState, "distinct Shelly plug identities"):
+                invalid.engage()
+            self.assertFalse(invalid.engaged)
+
+            reservation = OutputReservation(state, device, hardware_id="original", identify_plugs=lambda: identities)
+            reservation.engage()
+            reservation.before_glow()
+            restored = OutputReservation(state, device, hardware_id="original")
+            self.assertEqual(restored.plug_identities, identities)
+            self.assertTrue(restored.glow_pending)
+
+    def test_shutdown_confirmation_survives_interrupted_reservation_retirement(self):
+        with TemporaryDirectory() as root:
+            state, device = Path(root) / "trip", Path(root) / "device"
+            state.mkdir()
+            device.mkdir()
+            reservation = OutputReservation(state, device, hardware_id="original")
+            reservation.engage()
+            with patch.object(reservation, "clear", side_effect=OSError("interrupted")):
+                with self.assertRaisesRegex(OSError, "interrupted"):
+                    reservation.confirm_shutdown(led_black_frame_sent=True)
+
+            restored = OutputReservation(state, device, hardware_id="original")
+            self.assertTrue(restored.shutdown_confirmed)
+            self.assertTrue(restored.led_black_frame_sent)
+            self.assertTrue(restored.engaged)
+            restored.clear()
+            self.assertFalse(restored.engaged)
+            self.assertTrue(OutputReservation(state, device, hardware_id="original").shutdown_confirmed)
+            self.assertFalse(OutputReservation(state, device, hardware_id="different").shutdown_confirmed)
+
+            restored.engage()
+            reopened = OutputReservation(state, device, hardware_id="original")
+            self.assertFalse(reopened.shutdown_confirmed)
+            self.assertTrue(reopened.engaged)

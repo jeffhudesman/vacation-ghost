@@ -26,22 +26,38 @@ def _outputs(config: Config) -> PiOutputs:
     )
 
 
+def _check_plug_identity(outputs: PiOutputs, room: str, checked_plugs: dict[str, str]) -> str:
+    identity = outputs.plug_identity(room)
+    other = checked_plugs.get(identity)
+    if other is not None:
+        raise RuntimeError(f"same Shelly device as {other}. Configure two distinct plugs.")
+    checked_plugs[identity] = room
+    return identity
+
+
 def _doctor(config: Config) -> int:
     outputs = _outputs(config)
+    hardware = config.hardware
     checked_plugs: dict[str, str] = {}
 
     def check_plug(room: str) -> str:
-        identity = outputs.plug_identity(room)
-        other = checked_plugs.get(identity)
-        if other is not None:
-            raise RuntimeError(f"same Shelly device as {other}. Configure two distinct plugs.")
-        checked_plugs[identity] = room
+        _check_plug_identity(outputs, room, checked_plugs)
         return "on" if outputs.lamp_status(room) else "off"
+
+    def check_glow() -> str:
+        if not outputs.check_glow():
+            return "disabled"
+        return f"driver available ({hardware.led_backend}, BCM GPIO{hardware.led_pin}, {hardware.led_count} pixels)"
+
+    def check_sound() -> str:
+        if not outputs.check_audio():
+            return "disabled"
+        return f"player and cues available (volume {hardware.volume:g})"
 
     checks = {
         **{f"Plug {room}": lambda room=room: check_plug(room) for room in config.rooms},
-        "TV glow": lambda: "driver available" if outputs.check_glow() else "disabled",
-        "Sound": lambda: "player and cues available" if outputs.check_audio() else "disabled",
+        "TV glow": check_glow,
+        "Sound": check_sound,
     }
     failed = False
     for label, check in checks.items():
@@ -90,11 +106,12 @@ def _stop_event() -> Event:
     return stop
 
 
-def _refresh_recovered_status(config: Config, state_dir: Path) -> None:
+def _refresh_recovered_status(config: Config, state_dir: Path, reservation: state.OutputReservation) -> None:
     """Publish confirmed physical shutdown when the existing reports are usable."""
     try:
         trip_id = read_trip_id(state_dir)
         if trip_id is None:
+            reservation.clear_shutdown_confirmation()
             return
         dry_run = trip_id == trip_identity(config.start, config.end, dry_run=True)
         if not dry_run and trip_id != trip_identity(config.start, config.end):
@@ -103,12 +120,28 @@ def _refresh_recovered_status(config: Config, state_dir: Path) -> None:
         now = datetime.now(config.timezone)
         if not dry_run and (request := _disarm_time(state_dir / ".disarm-request.json", trip_id)) is not None:
             reports.disarm(request)
-        reports.confirm_shutdown()
+        reports.confirm_shutdown(relay_off_verified=True, led_black_frame_sent=reservation.led_black_frame_sent)
         reports.status(now, False, None, force=True)
         if not dry_run:
             reports.publish_due(now)
+        reservation.clear_shutdown_confirmation()
     except Exception as exc:
-        logging.warning("Outputs are off. Could not refresh the existing reports: %s", exc)
+        logging.warning("Could not refresh the existing reports after shutdown. Retry recover after fixing the issue: %s", exc)
+
+
+def _recover_pending_outputs(config: Config, outputs: PiOutputs, reservation: state.OutputReservation) -> bool:
+    if reservation.engaged and reservation.plug_identities is None and not reservation.shutdown_confirmed:
+        logging.warning("Legacy shutdown record. Recovery uses the configured plug addresses without stored MACs.")
+    return recover_outputs(config.rooms, outputs, reservation, led_enabled=bool(config.hardware.led_count))
+
+
+def _shutdown_message(led_black_frame_sent: bool | None) -> str:
+    message = "Shutdown confirmed. Relay off states verified."
+    if led_black_frame_sent is True:
+        return message + " LED blackout frame sent."
+    if led_black_frame_sent is False:
+        return message + " LED blackout frame delivery unconfirmed."
+    return message
 
 
 def _hardware_command(command: str, config: Config, state_dir: Path) -> None:
@@ -118,6 +151,13 @@ def _hardware_command(command: str, config: Config, state_dir: Path) -> None:
     is_rehearsal = command == "rehearse"
     disarm_path = state_dir / ".disarm-request.json"
     identity = trip_identity(config.start, config.end)
+
+    def identify_plugs() -> dict[str, str]:
+        checked_plugs: dict[str, str] = {}
+        identities = {room: _check_plug_identity(outputs, room, checked_plugs) for room in config.rooms}
+        outputs.bind_plug_identities(identities)
+        return identities
+
     try:
         if command == "disarm":
             try:
@@ -134,34 +174,49 @@ def _hardware_command(command: str, config: Config, state_dir: Path) -> None:
             if hardware.led_count and hardware.led_backend != DEFAULT_LED_BACKEND:
                 settings.append(hardware.led_backend)
             hardware_id = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
-            reservation = state.OutputReservation(state_dir, state.DEVICE_DIR, hardware_id=hardware_id)
+            reservation = state.OutputReservation(
+                state_dir, state.DEVICE_DIR, hardware_id=hardware_id, identify_plugs=identify_plugs,
+            )
+            if reservation.plug_identities is not None:
+                if set(reservation.plug_identities) != set(config.rooms):
+                    raise state.InvalidState("pending shutdown record does not identify every configured room")
+                outputs.bind_plug_identities(reservation.plug_identities)
             if command == "recover":
-                if recover_outputs(config.rooms, outputs, reservation):
-                    print("Shutdown confirmed.")
-                    _refresh_recovered_status(config, state_dir)
+                if _recover_pending_outputs(config, outputs, reservation):
+                    print(_shutdown_message(reservation.led_black_frame_sent))
+                    _refresh_recovered_status(config, state_dir, reservation)
                 else:
                     print("No pending shutdown for this state directory.")
                 return
+            if reservation.shutdown_confirmed:
+                _recover_pending_outputs(config, outputs, reservation)
+                _refresh_recovered_status(config, state_dir, reservation)
             try:
                 reports = ReportStore(state_dir, config.start, config.end, dry_run=is_rehearsal)
             except Exception as report_error:
                 if not reservation.engaged:
                     raise
                 try:
-                    recover_outputs(config.rooms, outputs, reservation)
+                    _recover_pending_outputs(config, outputs, reservation)
                 except (OSError, ValueError, RuntimeError) as shutdown_error:
                     raise RuntimeError(f"Could not open reports: {report_error}. {shutdown_error}") from shutdown_error
                 raise RuntimeError(f"Shutdown confirmed. Could not open reports: {report_error}") from report_error
+            if reservation.engaged and reservation.plug_identities is None:
+                _recover_pending_outputs(config, outputs, reservation)
+                _refresh_recovered_status(config, state_dir, reservation)
+                reports = ReportStore(state_dir, config.start, config.end, dry_run=is_rehearsal)
             controller = Controller(config.rooms, outputs, reports)
             stop = _stop_event()
             if is_rehearsal:
                 rehearse(config, controller, stop, reservation)
-                print("Rehearsal ended and shutdown was confirmed.")
+                print(f"Rehearsal ended. {_shutdown_message(reports.led_black_frame_sent)}")
             else:
                 run(config, controller, stop, reservation=reservation,
                     disarm_requested=lambda: _disarm_time(disarm_path, identity))
                 if command == "disarm":
-                    print("Disarm recorded. Shutdown complete.")
+                    print("Disarm recorded.")
+                    if reports.relay_off_verified:
+                        print(_shutdown_message(reports.led_black_frame_sent))
     except state.DeviceBusy:
         if command != "disarm":
             raise
@@ -199,7 +254,10 @@ def main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     try:
-        config = load_config(args.config, validate_sunset=args.command not in {"recover", "disarm"})
+        config = load_config(
+            args.config, validate_sunset=args.command not in {"recover", "disarm"},
+            validate_settings=args.command == "doctor",
+        )
         if args.command == "doctor":
             return _doctor(config)
         if args.command == "simulate":

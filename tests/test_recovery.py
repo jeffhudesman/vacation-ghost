@@ -12,7 +12,7 @@ from unittest.mock import Mock, call, patch
 from vacation_ghost import __main__ as cli
 from vacation_ghost import reports as report_module
 from vacation_ghost.config import Hardware, load_config
-from vacation_ghost.engine import Controller, rehearse, run
+from vacation_ghost.engine import SOUND_GRACE, Controller, Routine, rehearse, run
 from vacation_ghost.outputs import SimulationOutputs
 from vacation_ghost.reports import ReportStore
 from vacation_ghost.state import DeviceBusy, OutputReservation, lock_file
@@ -78,6 +78,85 @@ class RecoveryTests(unittest.TestCase):
         outputs.set_lamp.assert_called_once_with(kitchen, False)
         self.assertIsNone(controller.room)
 
+    def test_switch_rechecks_scene_after_adapter_prepares_to_energize(self):
+        bedtime = Routine(self.config).day(self.config.start.date()).events[-1].at
+        self.now = bedtime - timedelta(milliseconds=500)
+        outputs = SimulationOutputs()
+
+        def delayed_switch(room, may_start):
+            self.now += timedelta(seconds=1)
+            if not may_start():
+                return False
+            outputs.set_lamp(room, True)
+            return True
+
+        self.stop.wait.side_effect = lambda _: setattr(self, "now", self.config.end)
+        with (
+            patch.object(outputs, "set_lamp_if", create=True, side_effect=delayed_switch) as guarded,
+            patch.object(outputs, "set_lamp", wraps=outputs.set_lamp) as writes,
+        ):
+            run(self.config, Controller(self.config.rooms, outputs, self.reports), self.stop,
+                reservation=self.reservation)
+        self.assertEqual(guarded.call_count, 1)
+        self.assertTrue(all(not on for _, on in (item.args for item in writes.call_args_list)))
+
+    def test_glow_rechecks_scene_after_checkpointing_pending_output(self):
+        plan = Routine(self.config).day(self.config.start.date())
+        first_blackout = next(event.at for event in plan.events if event.kind == "glow" and not event.value)
+        self.now = first_blackout - timedelta(milliseconds=500)
+        record_pending = self.reservation.before_glow
+
+        def checkpoint():
+            record_pending()
+            self.now += timedelta(seconds=1)
+
+        self.stop.wait.side_effect = lambda _: setattr(self, "now", self.config.end)
+        outputs = SimulationOutputs()
+        with (
+            patch.object(self.reservation, "before_glow", side_effect=checkpoint),
+            patch.object(outputs, "set_glow", wraps=outputs.set_glow) as frames,
+        ):
+            run(self.config, Controller(self.config.rooms, outputs, self.reports), self.stop,
+                reservation=self.reservation)
+        self.assertEqual(frames.call_args_list, [call((0, 0, 0))] * 2)
+
+    def test_sound_expires_during_adapter_preparation(self):
+        cue = next(event for event in Routine(self.config).day(self.config.start.date()).events
+                   if event.kind == "sound" and event.at > self.config.start)
+        self.now = cue.at - timedelta(milliseconds=100)
+        times = iter((cue.at, self.config.end))
+        self.stop.wait.side_effect = lambda _: setattr(self, "now", next(times))
+        outputs = SimulationOutputs()
+
+        def delayed_play(name, may_start):
+            self.now += SOUND_GRACE
+            if not may_start():
+                return False
+            outputs.play_sound(name)
+            return True
+
+        with (
+            patch.object(outputs, "play_sound_if", create=True, side_effect=delayed_play) as guarded,
+            patch.object(outputs, "play_sound", wraps=outputs.play_sound) as played,
+        ):
+            run(self.config, Controller(self.config.rooms, outputs, self.reports), self.stop,
+                reservation=self.reservation)
+        self.assertEqual(guarded.call_count, 1)
+        played.assert_not_called()
+
+    def test_backward_clock_change_does_not_replay_a_sound_cue(self):
+        cue = next(event for event in Routine(self.config).day(self.config.start.date()).events
+                   if event.kind == "sound" and event.at > self.config.start)
+        before, after = cue.at - timedelta(milliseconds=100), cue.at + timedelta(milliseconds=100)
+        self.now = before
+        times = iter((after, after + timedelta(seconds=2), before, after, self.config.end))
+        self.stop.wait.side_effect = lambda _: setattr(self, "now", next(times))
+        outputs = SimulationOutputs()
+        with patch.object(outputs, "play_sound", wraps=outputs.play_sound) as played:
+            run(self.config, Controller(self.config.rooms, outputs, self.reports), self.stop,
+                reservation=self.reservation)
+        played.assert_called_once_with(cue.value)
+
     def test_heartbeat_restores_a_restarted_plug_without_overlapping_lamps(self):
         self.now = self.config.start
         kitchen, living = self.config.rooms
@@ -99,6 +178,7 @@ class RecoveryTests(unittest.TestCase):
                 status = self.read("latest.json")
                 self.assertTrue(status["active"])
                 self.assertEqual(status["lamp_room"], kitchen)
+                self.assertIsNone(status["relay_off_verified"])
                 self.assertEqual(status["faults_by_device"], {"plug": 1})
                 self.now = self.config.end
                 return False
@@ -183,6 +263,61 @@ class RecoveryTests(unittest.TestCase):
                          [(kitchen, False), (living, False)] * 2)
         self.assertFalse(self.reservation.engaged)
 
+    def test_restart_restores_shutdown_from_receipt_after_report_write_failure(self):
+        self.now = self.config.end
+        self.reservation.engage()
+        self.reservation.before_glow()
+        self.reports.record_device_fault(self.now, "plug", shutdown_unconfirmed=True)
+        outputs = SimulationOutputs()
+        write_report = report_module._write_json
+
+        def fail_report_write(path, record):
+            if path.name in {".activity.json", "latest.json"}:
+                raise OSError("reports unavailable")
+            write_report(path, record)
+
+        with (
+            patch.object(report_module, "_write_json", side_effect=fail_report_write),
+            self.assertRaisesRegex(OSError, "reports unavailable"),
+        ):
+            run(self.config, Controller(self.config.rooms, outputs, self.reports), self.stop,
+                reservation=self.reservation)
+        self.assertFalse(self.reservation.engaged)
+        self.assertTrue(self.reservation.shutdown_confirmed)
+
+        reports = ReportStore(self.trip, self.config.start, self.config.end)
+        restarted = OutputReservation(self.trip, self.device, hardware_id=TEST_HARDWARE_ID)
+        self.assertTrue(reports.shutdown_unconfirmed)
+        with patch.object(outputs, "set_lamp", wraps=outputs.set_lamp) as writes:
+            run(self.config, Controller(self.config.rooms, outputs, reports), self.stop, reservation=restarted)
+        writes.assert_not_called()
+        self.assertFalse(restarted.shutdown_confirmed)
+        latest = self.read("latest.json")
+        self.assertFalse(latest["shutdown_unconfirmed"])
+        self.assertTrue(latest["relay_off_verified"])
+        self.assertTrue(latest["led_black_frame_sent"])
+
+    def test_receipt_remains_if_journal_succeeds_but_latest_status_write_fails(self):
+        self.now = self.config.end
+        self.reservation.engage()
+        self.reports.record_device_fault(self.now, "plug", shutdown_unconfirmed=True)
+        outputs = SimulationOutputs()
+        write_report = report_module._write_json
+
+        def fail_latest(path, record):
+            if path.name == "latest.json":
+                raise OSError("status unavailable")
+            write_report(path, record)
+
+        with (
+            patch.object(report_module, "_write_json", side_effect=fail_latest),
+            self.assertRaisesRegex(OSError, "status unavailable"),
+        ):
+            run(self.config, Controller(self.config.rooms, outputs, self.reports), self.stop,
+                reservation=self.reservation)
+        self.assertFalse(self.read(".activity.json")["shutdown_unconfirmed"])
+        self.assertTrue(self.reservation.shutdown_confirmed)
+
     def test_led_shutdown_failure_stays_unconfirmed_when_journal_write_fails(self):
         self.now = self.config.end
         self.reservation.engage()
@@ -207,6 +342,8 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(outputs.set_glow.call_args_list, [call((0, 0, 0))] * 3)
         self.assertTrue(self.reservation.engaged)
         self.assertTrue(self.read("latest.json")["shutdown_unconfirmed"])
+        self.assertTrue(self.read("latest.json")["relay_off_verified"])
+        self.assertFalse(self.read("latest.json")["led_black_frame_sent"])
         self.assertTrue(self.read("trip.json")["shutdown_unconfirmed"])
 
     def test_legacy_marker_still_recovers_if_migration_write_fails(self):

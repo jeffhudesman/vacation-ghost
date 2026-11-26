@@ -126,6 +126,32 @@ living = "192.168.1.21"
             ):
                 outputs.plug_identity("kitchen")
 
+    def test_bound_plug_requires_the_recorded_identity_for_reads_and_writes(self):
+        outputs = PiOutputs(self.plugs)
+        outputs.bind_plug_identities({"kitchen": "aabbccddee01", "living": "aabbccddee02"})
+        for action in (outputs.lamp_status, lambda room: outputs.set_lamp(room, False)):
+            with patch("vacation_ghost.outputs._rpc_request", return_value=b'{"mac":"AABBCCDDEE03"}') as request:
+                with self.assertRaisesRegex(RuntimeError, "plug identity changed for kitchen"):
+                    action("kitchen")
+                request.assert_called_once_with("http://192.168.1.20", "Shelly.GetDeviceInfo", None)
+
+    def test_lamp_guard_runs_after_identity_lookup_and_switch_connection(self):
+        output = PiOutputs(self.plugs)
+        output.bind_plug_identities({"kitchen": "aabbccddee01", "living": "aabbccddee02"})
+        identity_socket, switch_socket = Mock(), Mock()
+        identity = b'{"mac":"AABBCCDDEE01"}'
+        headers = f"HTTP/1.1 200 OK\r\nContent-Length: {len(identity)}\r\n\r\n".encode()
+        identity_socket.makefile.return_value = io.BytesIO(headers + identity)
+        may_start = Mock(side_effect=lambda: not switch_socket.connect.called)
+
+        with patch("vacation_ghost.outputs.socket.socket", side_effect=[identity_socket, switch_socket]):
+            self.assertFalse(output.set_lamp_if("kitchen", may_start))
+
+        self.assertIn(b"GET /rpc/Shelly.GetDeviceInfo ", identity_socket.sendall.call_args.args[0])
+        switch_socket.connect.assert_called_once_with(("192.168.1.20", 80))
+        may_start.assert_called_once_with()
+        switch_socket.sendall.assert_not_called()
+
     def test_rpc_encodes_switch_post_and_confirms_with_get(self):
         sockets = []
         for body in (b'{"was_on":false}', b'{"output":true}'):
@@ -325,6 +351,7 @@ living = "192.168.1.21"
 
     def test_doctor_checks_spi_device_without_writing_a_frame(self):
         config = self.load_led_config('led_backend = "spi"\nled_count = 2')
+        config = replace(config, hardware=replace(config.hardware, volume=0.08))
         device = Mock()
         factory = Mock(return_value=device)
         responses = [
@@ -335,10 +362,13 @@ living = "192.168.1.21"
         with (
             patch.dict(sys.modules, {"spidev": SimpleNamespace(SpiDev=factory), "rpi_ws281x": None}),
             patch("vacation_ghost.outputs._rpc_request", side_effect=responses),
+            patch.object(PiOutputs, "check_audio", return_value=True),
             redirect_stdout(output),
         ):
             self.assertEqual(cli._doctor(config), 0)
         self.assertIn("TV glow: driver available", output.getvalue())
+        self.assertRegex(output.getvalue(), r"TV glow: .*spi.*10.*2 pixels")
+        self.assertRegex(output.getvalue(), r"Sound: .*volume.*0\.08")
         factory.assert_called_once_with()
         device.open.assert_called_once_with(0, 0)
         device.writebytes.assert_not_called()
@@ -387,9 +417,14 @@ living = "192.168.1.21"
     def test_cli_recover_retries_spi_blackout_after_failed_rehearsal(self):
         black_frame = b"\x00" * 256 + b"\xc0" * 24 + b"\x00" * 256
         relays = dict.fromkeys((f"http://{ip}" for ip in self.plugs.values()), False)
+        identities = dict(zip(relays, ("aabbccddee01", "aabbccddee02"), strict=True))
         strip_lit = False
 
-        def rpc_request(origin, operation, data=None):
+        def rpc_request(origin, operation, data=None, *, can_send=None):
+            if can_send is not None and not can_send():
+                return None
+            if operation == "Shelly.GetDeviceInfo":
+                return json.dumps({"mac": identities[origin]}).encode()
             if operation == "Switch.Set":
                 previous = relays[origin]
                 relays[origin] = json.loads(data)["on"]
@@ -470,6 +505,18 @@ living = "192.168.1.21"
                 outputs.poll_audio()
         start_player.assert_called_once()
         player.wait.assert_not_called()
+
+    def test_sound_guard_runs_after_preparing_audio(self):
+        outputs = PiOutputs(self.plugs, sounds_dir=Path("/unused"), volume=0.08)
+        with (
+            patch("vacation_ghost.outputs._read_sound", return_value=(1, 8_000, b"\x00\x00")) as read,
+            patch("vacation_ghost.outputs.shutil.which", return_value="/usr/bin/aplay"),
+            patch("vacation_ghost.outputs.subprocess.Popen") as play,
+        ):
+            may_start = Mock(side_effect=lambda: not read.called)
+            self.assertFalse(outputs.play_sound_if("tv", may_start))
+        may_start.assert_called_once_with()
+        play.assert_not_called()
 
     def test_sound_rejects_nonregular_symlinked_and_oversized_cues(self):
         with tempfile.TemporaryDirectory() as directory:

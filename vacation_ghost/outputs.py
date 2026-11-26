@@ -17,6 +17,7 @@ import sys
 import tempfile
 import wave
 from array import array
+from collections.abc import Callable
 from http.client import HTTPConnection, HTTPException
 from pathlib import Path
 from time import monotonic
@@ -149,7 +150,9 @@ class _DeadlineSocket:
         self._socket.close()
 
 
-def _rpc_request(origin: str, operation: str, data: bytes | None) -> bytes:
+def _rpc_request(
+    origin: str, operation: str, data: bytes | None, *, can_send: Callable[[], bool] | None = None
+) -> bytes | None:
     deadline = monotonic() + RPC_TIMEOUT
     url = urlsplit(origin)
     host = url.hostname
@@ -169,6 +172,8 @@ def _rpc_request(origin: str, operation: str, data: bytes | None) -> bytes:
         headers = {"Connection": "close"}
         if data is not None:
             headers["Content-Type"] = "application/json"
+        if can_send is not None and not can_send():
+            return None
         connection.request("GET" if data is None else "POST", f"/rpc/{operation}", data, headers)
         with connection.getresponse() as response:
             if not 200 <= response.status < 300:
@@ -251,6 +256,7 @@ class PiOutputs:
         self._origins = {room: _switch_origin(value) for room, value in plugs.items()}
         if len(set(self._origins.values())) != len(self._origins):
             raise ValueError("Each room needs its own plug")
+        self._plug_identities: dict[str, str] | None = None
         self._sounds_dir = sounds_dir
         self._volume = volume
         self._player: subprocess.Popen[bytes] | None = None
@@ -259,9 +265,27 @@ class PiOutputs:
         self._color = None
         self._strip = None
 
-    def _switch_call(self, room: str, operation: str, data: bytes | None = None) -> dict:
+    def bind_plug_identities(self, identities: dict[str, str]) -> None:
+        """Require reads and writes to reach the recorded device for each room."""
+        self._plug_identities = identities.copy()
+
+    def _verify_plug_identity(self, room: str) -> None:
+        if self._plug_identities is not None and self.plug_identity(room) != self._plug_identities.get(room):
+            raise RuntimeError(f"Shelly plug identity changed for {room}. Check the configured address before retrying.")
+
+    def _switch_call(
+        self, room: str, operation: str, data: bytes | None = None,
+        *, can_send: Callable[[], bool] | None = None,
+    ) -> dict | None:
         try:
-            result = json.loads(_rpc_request(self._origins[room], operation, data))
+            origin = self._origins[room]
+            if can_send is None:
+                response = _rpc_request(origin, operation, data)
+            else:
+                response = _rpc_request(origin, operation, data, can_send=can_send)
+            if response is None:
+                return None
+            result = json.loads(response)
         except (OSError, HTTPException, ValueError) as exc:
             raise RuntimeError(f"Shelly {operation} failed for {room}: {exc}") from exc
         if not isinstance(result, dict):
@@ -269,6 +293,7 @@ class PiOutputs:
         return result
 
     def lamp_status(self, room: str) -> bool:
+        self._verify_plug_identity(room)
         result = self._switch_call(room, "Switch.GetStatus?id=0")
         output = result.get("output")
         if not isinstance(output, bool):
@@ -284,13 +309,24 @@ class PiOutputs:
         return mac.lower()
 
     def set_lamp(self, room: str, on: bool) -> None:
+        self._set_lamp(room, on)
+
+    def set_lamp_if(self, room: str, can_start: Callable[[], bool]) -> bool:
+        """Recheck the scene after identifying and connecting to the plug."""
+        return self._set_lamp(room, True, can_start)
+
+    def _set_lamp(self, room: str, on: bool, can_start: Callable[[], bool] | None = None) -> bool:
+        self._verify_plug_identity(room)
         result = self._switch_call(
-            room, "Switch.Set", json.dumps({"id": 0, "on": on}).encode("utf-8")
+            room, "Switch.Set", json.dumps({"id": 0, "on": on}).encode("utf-8"), can_send=can_start
         )
+        if result is None:
+            return False
         if not isinstance(result.get("was_on"), bool):
             raise RuntimeError(f"Shelly switch did not acknowledge the request for {room}")
         if self.lamp_status(room) != on:
             raise RuntimeError(f"Shelly switch in {room} did not turn {'on' if on else 'off'}")
+        return True
 
     def check_glow(self) -> bool:
         if not self._led_count:
@@ -334,8 +370,15 @@ class PiOutputs:
         return True
 
     def play_sound(self, cue: str) -> None:
+        self._play_sound(cue)
+
+    def play_sound_if(self, cue: str, can_start: Callable[[], bool]) -> bool:
+        """Recheck the cue after preparing the audio and before starting playback."""
+        return self._play_sound(cue, can_start)
+
+    def _play_sound(self, cue: str, can_start: Callable[[], bool] | None = None) -> bool:
         if not self._volume:
-            return
+            return False
         if not re.fullmatch(r"[a-z0-9_-]+", cue):
             raise ValueError("Invalid sound cue name")
         sounds_dir, aplay = self._audio_settings()
@@ -356,7 +399,10 @@ class PiOutputs:
                 target.writeframes(attenuated.tobytes())
             audio.seek(0)
             self.stop_sound()
+            if can_start is not None and not can_start():
+                return False
             self._player = subprocess.Popen([aplay, "--quiet"], stdin=audio)
+        return True
 
     def poll_audio(self) -> None:
         if self._player is None:

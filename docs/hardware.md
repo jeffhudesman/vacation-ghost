@@ -4,7 +4,7 @@ Start with two switched lamps. Test your setup while you’re home before relyin
 
 ## Before buying
 
-- **Check the plug model and firmware.** Look for a Shelly Gen2, Gen3, or Gen4 plug with local control on switch channel 0, a built-in auto-off timer, and the option to stay off when power returns. Match your outlet type and the lamp’s load. [Hardware compatibility](#hardware-compatibility)
+- **Check the plug model and firmware.** Look for a Shelly Gen2, Gen3, or Gen4 plug with unauthenticated local RPC for switch channel 0 at a private IP address, a built-in auto-off timer, and the option to stay off when power returns. Match your outlet type and the lamp’s load. [Hardware compatibility](#hardware-compatibility)
 - **Try the lamps you own.** Leave each lamp’s switch on, unplug it, then plug it back in. It should light up as soon as it gets power.
 - **Check your network.** You’ll need to reserve two plug addresses and limit access to the Pi and trusted administrators. [Restrict plug access](#restrict-plug-access)
 
@@ -36,7 +36,31 @@ Use the [Preview 2 glow and audio setup instructions](service.md#optional-tv-glo
 
 Use two plugs configured for unauthenticated local RPC. Put them on a trusted or separate IoT segment and restrict access with a firewall or VLAN ACL so only the Pi and trusted administrators can reach them. Apply the rule to traffic between clients as well as traffic between networks. Keep port forwarding and UPnP off. Disable the vendor cloud for local-only operation.
 
-Reserve both plugs for Vacation Ghost. Disable their auto-on timers, stock schedules, actions, and any other home automation that switches them. Set each plug to restore power in the off state. Configure its built-in auto-off timer to outlast the longest planned single lamp session while limiting how long the lamp can stay on if the Pi loses power or network access. Confirm both safeguards independently of the Pi on your plug firmware.
+Reserve both plugs for Vacation Ghost. Disable their auto-on timers, stock schedules, actions, and any other home automation that switches them. Set each plug to restore power in the off state. Set its built-in auto-off timer long enough for your planned lamp runs and short enough to limit how long a lamp can stay on if the Pi loses power or network access. Confirm both safeguards independently of the Pi on your plug firmware. [Estimate the longest planned lamp run](#estimate-the-longest-planned-lamp-run)
+
+### Estimate the longest planned lamp run
+
+Use the simulator from a current `main` checkout with Python 3.11 or later. Set `config_path` to a readable private copy of the configuration you intend to run, including the real trip dates and routine settings. The full simulation writes local reports to a new temporary directory. Preview 2’s historical simulator predates this estimate.
+
+```sh
+(
+  set -eu
+  config_path="$HOME/vacation-private.toml"
+  plan_dir=$(mktemp -d "${TMPDIR:-/tmp}/vacation-ghost-plan.XXXXXX")
+  python3 -m vacation_ghost --config "$config_path" simulate --state-dir "$plan_dir"
+  python3 - "$plan_dir/trip.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report = json.loads(Path(sys.argv[1]).read_text())
+seconds = report["longest_lamp_run_seconds"]
+print(f"Longest planned lamp run, rounded up: {(seconds + 59) // 60} minutes")
+PY
+)
+```
+
+Give each plug’s timer margin above this schedule estimate. With the Pi disconnected, verify that each plug turns itself off after the configured delay and stays off when power returns. Recalculate if you change the trip or routine.
 
 ## Hardware compatibility
 
@@ -48,7 +72,9 @@ Reserve both plugs for Vacation Ghost. Disable their auto-on timers, stock sched
 | TV glow from `main` | Pi 5, Linux `spidev`, SPI0 MOSI on BCM GPIO10 (physical pin 19), up to 144 pixels | Automated tests cover frame encoding and blackout recovery. Physical glow and blackout tests are pending. [Bench rehearsal](service.md#try-pi-5-tv-glow-from-a-development-checkout) |
 | Sound | Pi Zero 2 W, Pi 4, or Pi 5, ALSA `aplay`, a system-visible default USB audio device, and a powered speaker | Verify playback under the installed systemd unit. |
 
-The **Shelly Plug US Gen4** (`S4PL-00116US`) is expected to work with the existing adapter over Wi-Fi. Verify auto-off and power-restore off independently of the Pi, then run `doctor` and `rehearse` with your exact model and firmware. [Shelly device profile](https://github.com/ALLTERCO/fleet-management/blob/6f1e3721b0958f5d6f75e71d43d317bba4fe1995/backend/src/devSimulation/profiles/gen4.ts#L198-L215) · [Physical checklist](#physical-release-checklist)
+Confirm the model and firmware expose the required RPC calls without plug credentials on your restricted network. Configure each plug with a private IPv4 or unique-local IPv6 address. For HTTPS, the Pi must trust the certificate and the certificate must cover the configured IP address. Some Shelly models come with HTTPS enabled at the factory and use Shelly-issued certificates, so confirm the certificate requirements before buying. [Shelly firmware notes](https://www.home-assistant.io/integrations/shelly/#shelly-enhanced-security)
+
+The **Shelly Plug US Gen4** (`S4PL-00116US`) is expected to work over Wi-Fi when its firmware and network settings meet those requirements. Verify auto-off and power-restore off independently of the Pi, then run `doctor` and `rehearse` with your exact model and firmware. [Shelly device profile](https://github.com/ALLTERCO/fleet-management/blob/6f1e3721b0958f5d6f75e71d43d317bba4fe1995/backend/src/devSimulation/profiles/gen4.ts#L198-L215) · [Physical checklist](#physical-release-checklist)
 
 ## Wire the optional LED strip
 
@@ -105,5 +131,6 @@ Physical testing is pending for the Shelly plugs and lamps, the optional LED and
 | Reboot the Pi during a short active trip. Observe the lamps during the interruption and confirm the schedule resumes after time synchronization. | Pending | Pending |
 | Interrupt the local network or Pi power while a lamp is on. Record when the plug-side timer turns it off. Keep the scheduled unit stopped when testing `recover` after reconnection. Verify it only switches outputs off. | Pending | Pending |
 | Disarm one test trip and let a separate test trip reach its scheduled end. Observe shutdown in both cases. Reboot after each and check that neither trip reactivates. | Pending | Pending |
-| If fitted, test LED and audio output under the actual unit. Check strip color and blackout, and listen at the door or window. | Pending | Pending |
+| For Pi 5 SPI glow from `main`, run the [bench rehearsal](service.md#try-pi-5-tv-glow-from-a-development-checkout) with the scheduled unit stopped. Observe the strip’s color and confirm it goes dark afterward. | Pending | Pending |
+| For optional hardware used with an installed service profile, test the fitted outputs under that unit. Observe the strip’s color and blackout, and listen at the door or window if using sound. | Pending | Pending |
 | Compare morning and final reports with observed activity. Check that a local reader can access only its intended exports. | Pending | Pending |

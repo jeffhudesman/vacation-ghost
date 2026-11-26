@@ -96,6 +96,16 @@ class ReportTest(unittest.TestCase):
         self.assertTrue(final["ended_early"])
         self.assertEqual(final["lamp_seconds"], 0)
 
+    def test_full_simulation_reports_longest_individual_lamp_run(self):
+        reports = ReportStore(self.state, self.start, self.end, dry_run=True)
+        reports.lamp_changed(self.start - timedelta(seconds=5), "kitchen")
+        reports.lamp_changed(self.start + timedelta(seconds=60, milliseconds=100), "living")
+        reports.lamp_changed(self.start + timedelta(seconds=119, milliseconds=600), None)
+        reports.publish_due(self.end)
+        final = self.read("trip.json")
+        self.assertEqual(final["lamp_seconds"], 119)
+        self.assertEqual(final["longest_lamp_run_seconds"], 61)
+
     def test_corrupt_daily_report_is_preserved_without_blocking_later_reports(self):
         reports = self.store()
         broken = self.state / "daily" / "2030-06-11.json"

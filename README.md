@@ -8,6 +8,8 @@ Make home look lived in while you’re away. Set your trip dates and Vacation Gh
 
 **Developer preview.** The Preview 2 simulator ran on a Raspberry Pi 5. Shelly plug and lamp control, optional LED and audio outputs, and automatic startup and trip recovery after a reboot still need physical testing. [Preview 2 release](https://github.com/jeffhudesman/vacation-ghost/releases/tag/v0.1.0-preview.2) · [Pi 5 test record](docs/hardware.md#raspberry-pi-5-simulator-test)
 
+[Read the sample evening as text](https://vacationghost.com/#sample-evening-transcript)
+
 [![Watch the Vacation Ghost demo. Concept animation of house lights changing over an evening.](docs/images/vacation-ghost-evening.gif)](https://vacationghost.com/#sample-evening)
 
 ## Try it without hardware
@@ -55,7 +57,7 @@ Add optional USB sound or TV glow after the lamp checks pass. Preview 2 uses PWM
 
 </details>
 
-At trip end, Vacation Ghost attempts to turn the outputs off and reports whether shutdown was confirmed. Use `disarm` to end a trip early and `recover` to retry a pending shutdown. Keep the plug settings and state directory until shutdown is confirmed. [Stop or recover a trip](docs/service.md#stop-recover-or-change-trips) · [Plug safeguards](docs/hardware.md#restrict-plug-access)
+At trip end, Vacation Ghost attempts to switch off the relays and verify their state through the plugs. If a glow strip is fitted, check it visually to confirm that it went dark. Use `disarm` to end a trip early and `recover` to retry a pending shutdown. Keep the original plug settings and state directory until shutdown is confirmed. [Stop or recover a trip](docs/service.md#stop-recover-or-change-trips) · [Plug safeguards](docs/hardware.md#restrict-plug-access)
 
 ## Read reports locally
 
@@ -64,7 +66,7 @@ Vacation Ghost uses no camera or microphone and collects no audio.
 | File in the state directory | Purpose |
 | --- | --- |
 | `latest.json` | Current lamp, heartbeat, device faults, and shutdown status. |
-| `daily/YYYY-MM-DD.json` | Previous evening’s activity, due at 8 AM in the trip’s time zone and named for its delivery date. |
+| `daily/YYYY-MM-DD.json` | Previous evening’s activity, named for the delivery date. The report is due at 8 AM in the trip’s time zone when the trip reaches that cutoff. |
 | `trip.json` | Trip summary and shutdown status as of publication. Check `latest.json` after a later recovery. |
 
 [Read reports on your Pi](docs/service.md#read-reports-locally)
@@ -73,7 +75,8 @@ Vacation Ghost uses no camera or microphone and collects no audio.
 <summary>JSON fields and local integrations</summary>
 
 - `latest.json` is replaced atomically. Its fields include `active`, `lamp_room`, `updated_at`, `shutdown_unconfirmed`, `faults_by_device`, and `device_faults`.
-- The controller checks both lamps at each 15-second heartbeat and corrects unexpected relay states. The lamps can continue running when audio or glow faults are reported.
+- During an active trip, the controller tries to check both relays every 15 seconds, including during quiet periods, and corrects unexpected states. Check `updated_at` for the last status timestamp. The lamps can continue running when audio or glow faults are reported.
+- In development builds, `latest.json` and `trip.json` report relay readback in `relay_off_verified` and the strip write in `led_black_frame_sent`.
 - The daily report includes `delivery_date` and `night_of`. A `schedule_note` explains an evening shortened or skipped because sunset was close to bedtime.
 - Daily and trip reports include `schema_version`, `trip_id`, and a stable `id`. Use `id` to send `message` once and skip reports with `dry_run` set to `true`. A malformed report is saved as a `.corrupt-*` copy and regenerated with the same ID.
 

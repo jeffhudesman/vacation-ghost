@@ -75,6 +75,9 @@ class _OffResult:
             or (glow_pending and "glow" in self.peripheral_faults)
         )
 
+    def led_black_frame_sent(self, led_enabled: bool) -> bool | None:
+        return "glow" not in self.peripheral_faults if led_enabled else None
+
 
 def _turn_outputs_off(
     rooms: tuple[str, str], outputs: Outputs, clock: Callable[[], datetime]
@@ -171,10 +174,25 @@ class Controller:
             for other in self.rooms:
                 if other not in (room, previous_room) and self._switch_off_unexpected_lamp(other):
                     self.reports.record_device_fault(confirmed_at(), "plug")
-        if can_start is None or can_start():
+        def allow_activation() -> bool:
+            if can_start is not None and not can_start():
+                return False
+            self.reports.set_shutdown_checks(None, self.reports.led_black_frame_sent)
+            return True
+
+        guarded_switch = getattr(self.outputs, "set_lamp_if", None)
+        if guarded_switch is None:
+            if not allow_activation():
+                return
             _switch(self.outputs, room, True)
-            self.room = room
-            self.reports.lamp_changed(confirmed_at(), room)
+        else:
+            try:
+                if not guarded_switch(room, allow_activation):
+                    return
+            except (RuntimeError, OSError, ValueError) as exc:
+                raise PlugError(f"{room}: {exc}") from exc
+        self.room = room
+        self.reports.lamp_changed(confirmed_at(), room)
 
     def _switch_off_unexpected_lamp(self, room: str) -> bool:
         if not _lamp_status(self.outputs, room):
@@ -201,12 +219,14 @@ class Controller:
 
     def record_plug_fault(self, now: datetime) -> None:
         self._blackout_owns_uncertainty = False
+        self.reports.set_shutdown_checks(None, self.reports.led_black_frame_sent)
         self.reports.record_device_fault(now, "plug", shutdown_unconfirmed=True)
 
     def glow(self, now: datetime, scene: str) -> None:
         if not scene:
             if self.scene:
                 self.outputs.set_glow(DARK)
+                self.reports.set_shutdown_checks(self.reports.relay_off_verified, True)
             self.scene = ""
             self.color = DARK
             return
@@ -222,6 +242,7 @@ class Controller:
             self.next_cut = frame_at + delay
         color = tuple(round((source + target) / 2) for source, target in zip(self.color, self.target))
         if color != self.color:
+            self.reports.set_shutdown_checks(self.reports.relay_off_verified, None)
             self.outputs.set_glow(color)
             self.color = color
         self.scene = scene
@@ -245,11 +266,15 @@ class Controller:
             self._blackout_failures = 0
             self.scene = ""
             self.color = DARK
+            self.reports.set_shutdown_checks(self.reports.relay_off_verified, True)
             if self._blackout_owns_uncertainty:
                 self._blackout_owns_uncertainty = False
-                self.reports.confirm_shutdown()
+                self.reports.confirm_shutdown(
+                    relay_off_verified=self.reports.relay_off_verified, led_black_frame_sent=True,
+                )
             return
 
+        self.reports.set_shutdown_checks(self.reports.relay_off_verified, False)
         if self._blackout_failures == 0:
             self._blackout_owns_uncertainty = not self.reports.shutdown_unconfirmed
             self.reports.set_shutdown_unconfirmed(True)
@@ -263,6 +288,16 @@ class Controller:
         if device not in self.failed_peripherals and not _try_peripheral(device, action):
             self.failed_peripherals.add(device)
             self.reports.record_device_fault(now, device)
+
+    def play_cue(self, now: datetime, cue: str, can_start: Callable[[], bool]) -> None:
+        def play() -> None:
+            guarded_play = getattr(self.outputs, "play_sound_if", None)
+            if guarded_play is not None:
+                guarded_play(cue, can_start)
+            elif can_start():
+                self.outputs.play_sound(cue)
+
+        self.peripheral(now, "sound", play)
 
     def record_off(self, now: datetime, result: _OffResult) -> None:
         if "glow" not in result.peripheral_faults:
@@ -283,13 +318,18 @@ class Controller:
             self.reports.record_device_fault(now, device)
 
     def off(
-        self, now: datetime, *, glow_pending: bool = False, clock: Callable[[], datetime] | None = None
+        self, now: datetime, *, glow_pending: bool = False, led_enabled: bool = False,
+        clock: Callable[[], datetime] | None = None,
     ) -> bool:
         confirmed_at = clock or (lambda: now)
         result = _turn_outputs_off(self.rooms, self.outputs, confirmed_at)
         confirmed = result.confirmed(glow_pending)
+        led_black_frame_sent = result.led_black_frame_sent(led_enabled or glow_pending)
+        self.reports.set_shutdown_checks(not result.plug_errors, led_black_frame_sent)
         self.reports.set_shutdown_unconfirmed(not confirmed)
         self.record_off(now, result)
+        if confirmed:
+            self.reports.confirm_shutdown(relay_off_verified=True, led_black_frame_sent=led_black_frame_sent)
         if glow_pending and "glow" in result.peripheral_faults:
             if not self._blackout_failures:
                 self._blackout_at = monotonic() + RETRY_DELAYS[0]
@@ -326,7 +366,8 @@ def simulate(config: Config, outputs: Outputs, reports: ReportStore, through: da
                 outputs.play_sound(event.value)
         day += timedelta(days=1)
     if utc(through) >= routine.end:
-        controller.off(config.end)
+        reports.complete(config.end)
+        controller.off(config.end, led_enabled=config.hardware is None or bool(config.hardware.led_count))
     reports.status(through, routine.active(through), controller.room)
     reports.publish_due(through)
 
@@ -348,29 +389,38 @@ def _retry_outputs_off(
 
 
 def recover_outputs(
-    rooms: tuple[str, str], outputs: Outputs, reservation: OutputReservation
+    rooms: tuple[str, str], outputs: Outputs, reservation: OutputReservation, *, led_enabled: bool = False,
 ) -> bool:
     """Recover a pending shutdown without constructing or updating reports."""
+    if reservation.shutdown_confirmed:
+        if reservation.engaged:
+            reservation.clear()
+        return True
     if not reservation.engaged:
         return False
     attempts = _retry_outputs_off(rooms, outputs, glow_pending=reservation.glow_pending,
                                   clock=lambda: datetime.now(UTC))
     if not attempts[-1][1].confirmed(reservation.glow_pending):
         raise RuntimeError("shutdown unconfirmed; retry with the same configuration and state directory")
-    reservation.clear()
+    reservation.confirm_shutdown(led_black_frame_sent=attempts[-1][1].led_black_frame_sent(
+        led_enabled or reservation.glow_pending,
+    ))
     return True
 
 
 def _shutdown(
-    controller: Controller, reservation: OutputReservation, clock: Callable[[], datetime]
+    controller: Controller, reservation: OutputReservation, clock: Callable[[], datetime], *, led_enabled: bool,
 ) -> None:
     glow_pending = reservation.glow_pending
     attempts = _retry_outputs_off(controller.rooms, controller.outputs, glow_pending=glow_pending, clock=clock)
-    confirmed = attempts[-1][1].confirmed(glow_pending)
+    final_result = attempts[-1][1]
+    confirmed = final_result.confirmed(glow_pending)
+    led_black_frame_sent = final_result.led_black_frame_sent(led_enabled or glow_pending)
     reports = controller.reports
+    reports.set_shutdown_checks(not final_result.plug_errors, led_black_frame_sent)
     reports.set_shutdown_unconfirmed(not confirmed)
     if confirmed:
-        reservation.clear()
+        reservation.confirm_shutdown(led_black_frame_sent=led_black_frame_sent)
     recorded_end = reports.disarmed_at or reports.completed_at
     for at, result in attempts:
         if recorded_end is not None:
@@ -379,7 +429,7 @@ def _shutdown(
         if not result.confirmed(glow_pending):
             reports.record_device_fault(at, "shutdown", shutdown_unconfirmed=True, affects_shutdown_status=False)
     if confirmed:
-        reports.confirm_shutdown()
+        reports.confirm_shutdown(relay_off_verified=True, led_black_frame_sent=led_black_frame_sent)
     else:
         raise RuntimeError("shutdown unconfirmed; retry with the same configuration and state directory")
 
@@ -394,6 +444,7 @@ def run(
 ) -> None:
     routine = Routine(config)
     reports = controller.reports
+    led_enabled = config.hardware is None or bool(config.hardware.led_count)
 
     def clock() -> datetime:
         return datetime.now(config.timezone)
@@ -405,19 +456,35 @@ def run(
             reports.disarm(request)
         return reports.disarmed_at is not None or reports.complete(at) is not None
 
-    def can_start() -> bool:
+    def active_at() -> datetime | None:
         if stop.is_set() or trip_finished(clock()):
-            return False
+            return None
         at = clock()
-        return reports.complete(at) is None and not stop.is_set() and routine.active(at)
+        if reports.complete(at) is None and not stop.is_set() and routine.active(at):
+            return at
+        return None
+
+    def lamp_is_current(room: str | None) -> bool:
+        at = active_at()
+        return at is not None and routine.desired(at, at)[0] == room
+
+    def cue_is_current(cue: str) -> bool:
+        at = active_at()
+        return at is not None and routine.desired(at, last_sound_check)[2] == cue
 
     reservation = reservation or OutputReservation(reports.state_dir)
     previous = clock()
+    last_sound_check = utc(previous)
     next_heartbeat = monotonic()
     initialized = False
     plug_failures = 0
     try:
-        if trip_finished(previous):
+        finished = trip_finished(previous)
+        if reservation.shutdown_confirmed:
+            if reservation.engaged:
+                reservation.clear()
+            _publish_stopped(controller, reservation, clock)
+        if finished:
             return
         if reservation.engaged and not reservation.path.exists():
             reservation.engage()
@@ -435,32 +502,34 @@ def run(
                         reset_at = clock()
                         if trip_finished(reset_at):
                             break
-                        if controller.off(reset_at, glow_pending=reservation.glow_pending, clock=clock):
-                            reports.confirm_shutdown()
-                        else:
+                        if not controller.off(reset_at, glow_pending=reservation.glow_pending,
+                                              led_enabled=led_enabled, clock=clock):
                             reports.record_device_fault(clock(), "shutdown", shutdown_unconfirmed=True)
                         initialized = True
-                    elif heartbeat and can_start():
+                    elif heartbeat and active_at() is not None:
                         controller.verify_lamps(clock)
-                    if can_start():
-                        now = clock()
-                        plan = routine.day(now.date())
+                    if (scene_at := active_at()) is not None:
+                        plan = routine.day(scene_at.date())
                         if plan.evening_note is not None:
                             reports.record_schedule_note(plan.day, plan.evening_note)
-                        room, scene, cue = routine.desired(now, previous)
-                        if not scene or "glow" in controller.failed_peripherals:
-                            controller.update_glow(now, "")
-                        controller.lamp(now, room, can_start, clock=clock)
-                        if scene and "glow" not in controller.failed_peripherals:
-                            if config.hardware is None or config.hardware.led_count:
-                                reservation.before_glow()
-                            if can_start():
-                                controller.update_glow(clock(), scene)
-                        if can_start() and cue is not None:
-                            controller.peripheral(clock(), "sound", lambda: controller.outputs.play_sound(cue))
+                        room, scene, _ = routine.desired(scene_at, scene_at)
+                        if led_enabled and (not scene or "glow" in controller.failed_peripherals):
+                            controller.update_glow(scene_at, "")
+                        controller.lamp(scene_at, room, lambda: lamp_is_current(room), clock=clock)
+                        if led_enabled and scene and "glow" not in controller.failed_peripherals:
+                            reservation.before_glow()
+                            glow_at = active_at()
+                            if glow_at is not None and routine.desired(glow_at, glow_at)[:2] == (controller.room, scene):
+                                controller.update_glow(glow_at, scene)
+                        if (sound_at := active_at()) is not None:
+                            cue = routine.desired(sound_at, last_sound_check)[2]
+                            if cue is not None:
+                                controller.play_cue(sound_at, cue, lambda: cue_is_current(cue))
+                            last_sound_check = max(last_sound_check, utc(sound_at))
                         controller.peripheral(clock(), "sound", controller.outputs.poll_audio)
                 elif reservation.engaged:
-                    _shutdown(controller, reservation, clock)
+                    _shutdown(controller, reservation, clock, led_enabled=led_enabled)
+                    _publish_stopped(controller, reservation, clock)
                     initialized = False
                 plug_failures = 0
             except PlugError as exc:
@@ -476,7 +545,7 @@ def run(
                     raise
                 stop.wait(RETRY_DELAYS[plug_failures])
                 plug_failures += 1
-                previous = clock()
+                last_sound_check = max(last_sound_check, utc(clock()))
                 continue
 
             report_at = clock()
@@ -486,24 +555,42 @@ def run(
             if heartbeat:
                 reports.publish_due(report_at)
                 next_heartbeat = tick + HEARTBEAT.total_seconds()
-            previous = now
+            if not routine.active(now):
+                last_sound_check = max(last_sound_check, utc(now))
             stop.wait(0.15 if initialized else 1)
     finally:
         try:
             trip_finished(clock())
         finally:
-            _finish(controller, reservation, clock)
+            _finish(controller, reservation, clock, led_enabled=led_enabled)
 
 
 def _finish(
-    controller: Controller, reservation: OutputReservation, clock: Callable[[], datetime]
+    controller: Controller, reservation: OutputReservation, clock: Callable[[], datetime], *, led_enabled: bool,
 ) -> None:
     try:
         if reservation.engaged:
-            _shutdown(controller, reservation, clock)
+            if reservation.shutdown_confirmed:
+                reservation.clear()
+            else:
+                _shutdown(controller, reservation, clock, led_enabled=led_enabled)
     finally:
-        controller.reports.status(clock(), False, None, force=True)
-        controller.reports.publish_due(clock())
+        _publish_stopped(controller, reservation, clock)
+
+
+def _publish_stopped(
+    controller: Controller, reservation: OutputReservation, clock: Callable[[], datetime],
+) -> None:
+    reports = controller.reports
+    confirmed = reservation.shutdown_confirmed
+    try:
+        if confirmed:
+            reports.confirm_shutdown(relay_off_verified=True, led_black_frame_sent=reservation.led_black_frame_sent)
+    finally:
+        reports.status(clock(), False, None, force=True)
+        reports.publish_due(clock())
+    if confirmed and not reservation.engaged:
+        reservation.clear_shutdown_confirmation()
 
 
 def rehearse(
@@ -516,24 +603,27 @@ def rehearse(
     def can_start() -> bool:
         return not stop.is_set()
 
+    led_enabled = config.hardware is None or bool(config.hardware.led_count)
     reservation.engage()
     try:
-        controller.off(clock(), glow_pending=reservation.glow_pending, clock=clock)
+        controller.off(clock(), glow_pending=reservation.glow_pending, led_enabled=led_enabled, clock=clock)
         for room, cue, scene in zip(config.rooms, ("kettle", "tv"), ("", "drama")):
             if not can_start():
                 break
             controller.lamp(clock(), room, can_start, clock=clock)
             if not can_start():
                 break
-            controller.peripheral(clock(), "sound", lambda: controller.outputs.play_sound(cue))
-            if scene and "glow" not in controller.failed_peripherals and (config.hardware is None or config.hardware.led_count):
+            controller.play_cue(clock(), cue, can_start)
+            if scene and "glow" not in controller.failed_peripherals and led_enabled:
                 reservation.before_glow()
             for _ in range(30):
                 if stop.wait(0.2):
                     break
-                controller.update_glow(clock(), scene)
+                if led_enabled:
+                    controller.update_glow(clock(), scene)
                 controller.peripheral(clock(), "sound", controller.outputs.poll_audio)
         if controller.failed_peripherals:
             raise RuntimeError("rehearsal found faults in " + ", ".join(sorted(controller.failed_peripherals)))
     finally:
-        _shutdown(controller, reservation, clock)
+        _shutdown(controller, reservation, clock, led_enabled=led_enabled)
+        reservation.clear_shutdown_confirmation()

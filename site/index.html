@@ -121,17 +121,15 @@
               </details>
               <audio id="scene-audio" preload="none"></audio>
             </div>
-            <noscript>
-              <details class="routine-transcript">
-                <summary>Read the sample evening</summary>
-                <ol>
-                  <li>The kitchen lamp switches on near sunset.</li>
-                  <li>After dinner, the living room lamp takes a turn. Optional TV glow and household sounds accompany the evening.</li>
-                  <li>The lamps go out at bedtime, and the kitchen lamp comes on briefly in the morning.</li>
-                  <li>The morning report summarizes the previous evening’s lamp activity.</li>
-                </ol>
-              </details>
-            </noscript>
+            <details class="routine-transcript">
+              <summary id="sample-evening-transcript">Read the sample evening</summary>
+              <ol>
+                <li>The kitchen lamp switches on near sunset.</li>
+                <li>After dinner, the living room lamp takes a turn. Optional TV glow and household sounds accompany the evening.</li>
+                <li>The lamps go out at bedtime, and the kitchen lamp comes on briefly in the morning.</li>
+                <li>The morning report summarizes the previous evening’s lamp activity.</li>
+              </ol>
+            </details>
             <div class="routine-next">
               <a href="#parts">See what you need <span aria-hidden="true">↓</span></a>
               <a href="#setup-panel-simulator">Try the Linux simulator <span aria-hidden="true">↓</span></a>
@@ -155,7 +153,7 @@
             </li>
             <li class="part">
               <h3>Two Shelly smart plugs</h3>
-              <p>Use compatible Gen2, Gen3, or Gen4 plugs with local RPC, switch channel 0, auto-off, and an option to stay off when power returns. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/main/docs/hardware.md#hardware-compatibility">Check your model and firmware</a>.</p>
+              <p>Use compatible Gen2, Gen3, or Gen4 plugs with unauthenticated local RPC on switch channel 0, auto-off, and an option to stay off when power returns. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/main/docs/hardware.md#hardware-compatibility">Check your model and firmware</a>.</p>
             </li>
             <li class="part">
               <h3>Two lamps</h3>
@@ -163,7 +161,7 @@
             </li>
             <li class="part">
               <h3>A local network you can configure</h3>
-              <p>Reserve an address for each plug and restrict access to the Pi and trusted administrators. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/hardware.md#restrict-plug-access">Set up your plug network</a>.</p>
+              <p>Reserve a private IP address for each plug and restrict access to the Pi and trusted administrators. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/main/docs/hardware.md#restrict-plug-access">Set up your plug network</a>.</p>
             </li>
           </ul>
           <div class="parts-next">
@@ -181,7 +179,7 @@
       </div>
       <details class="parts-optional">
         <summary>Optional glow and sound</summary>
-        <p>TV glow uses a 5 V WS2812B-compatible GRB strip with its own power supply and a logic level shifter. The Preview 2 glow setup uses PWM on Pi Zero 2 W and Pi 4. For sound, add a USB audio adapter and powered speaker. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/service.md#optional-tv-glow-and-sound">Preview 2 glow and sound setup</a>.</p>
+        <p>TV glow uses a 5 V WS2812B-compatible GRB strip with its own power supply and a logic level shifter. The Preview 2 glow setup uses PWM on Pi Zero 2 W and Pi 4. For sound, add a USB audio adapter and powered speaker. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/main/docs/service.md#optional-tv-glow-and-sound">Preview 2 glow and sound setup</a>.</p>
         <p><strong>Pi 5 TV glow.</strong> The SPI driver is available on GitHub <code>main</code> for bench testing. It uses GPIO10 (physical pin 19) and accepts up to 144 pixels. Physical glow and blackout tests are pending. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/main/docs/service.md#try-pi-5-tv-glow-from-a-development-checkout">Try the Pi 5 glow setup</a>.</p>
       </details>
     </section>
@@ -249,7 +247,7 @@
               <ol class="pi-install-steps">
                 <li><strong>Install.</strong> Connect both plugs to the restricted network and follow the guide to install the lights-only profile.</li>
                 <li><strong>Configure.</strong> Set a future departure, your return, the trip’s time zone, and both plug addresses in the <a href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/examples/vacation.lights-only.toml">lights-only example</a>.</li>
-                <li><strong>Test while home.</strong> Run <code>doctor</code> and <code>rehearse</code>. Enable startup at boot after the service reports it’s idle and waiting for departure. Complete the <a href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/hardware.md#physical-release-checklist">power and network checklist</a> before traveling.</li>
+                <li><strong>Test while home.</strong> Run <code>doctor</code> and <code>rehearse</code>. Enable startup at boot after the service reports it’s idle and waiting for departure. Complete the <a href="https://github.com/jeffhudesman/vacation-ghost/blob/main/docs/hardware.md#physical-release-checklist">power and network checklist</a> before traveling.</li>
               </ol>
               <details class="setup-doctor">
                 <summary>Check both plugs after installation</summary>
@@ -294,16 +292,16 @@ Sound: disabled</code></pre>
         <details>
           <summary>Where do I find my morning note?</summary>
           <p>The previous evening’s note is due at 8 AM in the trip’s time zone on mornings during the trip. If the Pi is offline then, it can write the note when it resumes. Reports stay on the Pi. Look for the delivery date under <code>/var/lib/vacation-ghost/current/daily/</code>. The final trip summary is in <code>/var/lib/vacation-ghost/current/trip.json</code>.</p>
-          <p><a href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/service.md#read-reports-locally">Get the command to read a report on your Pi</a>.</p>
+          <p><a href="https://github.com/jeffhudesman/vacation-ghost/blob/main/docs/service.md#read-reports-locally">Get the command to read a report on your Pi</a>.</p>
         </details>
         <details>
           <summary>What if my plans change?</summary>
-          <p>Use <code>disarm</code> to end a trip early. If shutdown needs to be retried, <code>recover</code> only attempts to switch outputs off. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/service.md#stop-recover-or-change-trips">See the service guide</a>.</p>
+          <p>Use <code>disarm</code> to end a trip early. If shutdown needs to be retried, <code>recover</code> only attempts to switch outputs off. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/main/docs/service.md#stop-recover-or-change-trips">See the service guide</a>.</p>
         </details>
         <details>
           <summary>Is it ready for an unattended trip?</summary>
           <p>The Preview 2 simulator ran on a Raspberry Pi 5 with 64-bit Raspberry Pi OS and saved the sample trip’s June 11, 2030 morning report as local JSON. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/main/docs/hardware.md#raspberry-pi-5-simulator-test">See the simulator test results</a>.</p>
-          <p>Shelly plug and lamp control, optional LED and audio output, and automatic startup and trip recovery after a reboot still need physical testing. Complete the <a href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/hardware.md#physical-release-checklist">hardware checklist</a> on your own setup, including power and network outages, before relying on it while away.</p>
+          <p>Shelly plug and lamp control, optional LED and audio output, and automatic startup and trip recovery after a reboot still need physical testing. Complete the <a href="https://github.com/jeffhudesman/vacation-ghost/blob/main/docs/hardware.md#physical-release-checklist">hardware checklist</a> on your own setup, including power and network outages, before relying on it while away.</p>
         </details>
       </div>
     </section>

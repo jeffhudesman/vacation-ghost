@@ -40,6 +40,8 @@ Describe the behavior change and the checks you ran in the pull request. Documen
 
 To install the Linux CLI from a checkout, run `python3 -m pip install .` in a virtual environment.
 
+Builds from `main` carry a `.dev` package version. Tagged previews carry the version set for that release.
+
 Use Python 3.11 or later and install the CI build frontend with `python3 -m pip install build==1.3.0` in a development virtual environment. Run this from a Git checkout at the commit you intend to package. It builds the source distribution and wheel from the committed files, then runs the installed CLI in a fresh environment.
 
 ```sh

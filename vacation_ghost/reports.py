@@ -7,6 +7,7 @@ import os
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from math import ceil
 from pathlib import Path
 from uuid import uuid4
 
@@ -153,11 +154,13 @@ class ReportStore:
         self._intervals: list[tuple[datetime, datetime]] = []
         self._faults: list[_DeviceFault] = []
         self._shutdown_unconfirmed = False
+        self._relay_off_verified: bool | None = None
+        self._led_black_frame_sent: bool | None = None
         self._shutdown_dirty = False
         self._schedule_notes: dict[date, str] = {}
         self._disarmed_at: datetime | None = None
         self._completed_at: datetime | None = None
-        self._last_status: tuple[bool, str | None, bool, bool, int, bool] | None = None
+        self._last_status: tuple[bool, str | None, bool, bool, int, bool, bool | None, bool | None] | None = None
         self._next_night = trip_start.date()
         self._trip_published = False
         self._restore_journal()
@@ -178,6 +181,8 @@ class ReportStore:
                 [fault.at.isoformat(), fault.device, fault.shutdown_unconfirmed] for fault in self._faults
             ],
             "shutdown_unconfirmed": self._shutdown_unconfirmed,
+            "relay_off_verified": self._relay_off_verified,
+            "led_black_frame_sent": self._led_black_frame_sent,
             "schedule_notes": {day.isoformat(): note for day, note in self._schedule_notes.items()},
             "disarmed_at": self.disarmed_at.isoformat() if self.disarmed_at is not None else None,
         })
@@ -208,6 +213,12 @@ class ReportStore:
             self._shutdown_unconfirmed = data.get("shutdown_unconfirmed", False)
             if not isinstance(self._shutdown_unconfirmed, bool):
                 raise ValueError("invalid shutdown status")
+            self._relay_off_verified = data.get("relay_off_verified")
+            self._led_black_frame_sent = data.get("led_black_frame_sent")
+            if any(check is not None and not isinstance(check, bool) for check in (
+                self._relay_off_verified, self._led_black_frame_sent,
+            )):
+                raise ValueError("invalid shutdown check result")
             notes = data.get("schedule_notes", {})
             if not isinstance(notes, dict) or any(not isinstance(note, str) or not note for note in notes.values()):
                 raise ValueError("invalid schedule notes")
@@ -272,7 +283,8 @@ class ReportStore:
         """Record the first observation of the planned trip end before switching off."""
         instant = _utc(at)
         if self.completed_at is None and self.disarmed_at is None and instant >= self._end:
-            _write_json(self._completion, {"trip_id": self.trip_id, "completed_at": instant.isoformat()})
+            if not self._dry_run:
+                _write_json(self._completion, {"trip_id": self.trip_id, "completed_at": instant.isoformat()})
             self._completed_at = instant
         return self.completed_at
 
@@ -302,14 +314,32 @@ class ReportStore:
     def shutdown_unconfirmed(self) -> bool:
         return self._shutdown_unconfirmed
 
+    @property
+    def relay_off_verified(self) -> bool | None:
+        return self._relay_off_verified
+
+    @property
+    def led_black_frame_sent(self) -> bool | None:
+        return self._led_black_frame_sent
+
     def set_shutdown_unconfirmed(self, unconfirmed: bool) -> None:
         """Update current physical outcome without a fallible write before reporting it."""
         if self._shutdown_unconfirmed != unconfirmed:
             self._shutdown_unconfirmed = unconfirmed
             self._shutdown_dirty = True
 
-    def confirm_shutdown(self) -> None:
-        """Clear shutdown uncertainty once all outputs acknowledge an off request."""
+    def set_shutdown_checks(self, relay_off_verified: bool | None, led_black_frame_sent: bool | None) -> None:
+        """Track relay readback and LED frame delivery as distinct observations."""
+        if (self._relay_off_verified, self._led_black_frame_sent) != (relay_off_verified, led_black_frame_sent):
+            self._relay_off_verified = relay_off_verified
+            self._led_black_frame_sent = led_black_frame_sent
+            self._shutdown_dirty = True
+
+    def confirm_shutdown(
+        self, *, relay_off_verified: bool | None = None, led_black_frame_sent: bool | None = None,
+    ) -> None:
+        """Persist the confirmed controller checks for an off request."""
+        self.set_shutdown_checks(relay_off_verified, led_black_frame_sent)
         self.set_shutdown_unconfirmed(False)
         if self._shutdown_dirty:
             self._save_journal()
@@ -335,7 +365,10 @@ class ReportStore:
                 self._save_journal()
         disarmed = self.disarmed_at is not None
         completed = self.completed_at is not None
-        state = active, room, disarmed, completed, len(self._faults), self._shutdown_unconfirmed
+        state = (
+            active, room, disarmed, completed, len(self._faults), self._shutdown_unconfirmed,
+            self._relay_off_verified, self._led_black_frame_sent,
+        )
         if force or self._last_status != state:
             if disarmed:
                 message = "Vacation Ghost is disarmed."
@@ -353,6 +386,8 @@ class ReportStore:
                 "dry_run": self._dry_run,
                 "disarmed": disarmed,
                 "completed": completed,
+                "relay_off_verified": self._relay_off_verified,
+                "led_black_frame_sent": self._led_black_frame_sent,
                 **faults,
                 "message": self._prefix + message + _fault_message(faults),
             })
@@ -369,26 +404,31 @@ class ReportStore:
         self._open = None if room is None else _LampRun(room, at, at)
         self._save_journal()
 
-    def _metrics(self, start: datetime, end: datetime) -> dict:
+    def _metrics(self, start: datetime, end: datetime, *, include_longest_run: bool = False) -> dict:
         intervals = self._intervals.copy()
         if self._open is not None:
             intervals.append((self._open.start, self._open.observed_through))
         merged: list[tuple[datetime, datetime]] = []
+        longest_run = 0.0
         for lower, upper in sorted(intervals):
             lower, upper = max(start, lower), min(end, upper)
             if upper <= lower:
                 continue
+            longest_run = max(longest_run, (upper - lower).total_seconds())
             if merged and lower <= merged[-1][1]:
                 previous_lower, previous_upper = merged[-1]
                 merged[-1] = (previous_lower, max(previous_upper, upper))
             else:
                 merged.append((lower, upper))
 
-        return {
+        metrics = {
             "lamp_seconds": int(sum((upper - lower).total_seconds() for lower, upper in merged)),
             "first_lamp_activity_at": merged[0][0].astimezone(self._zone).isoformat() if merged else None,
             "last_lamp_activity_at": merged[-1][1].astimezone(self._zone).isoformat() if merged else None,
         }
+        if include_longest_run:
+            metrics["longest_lamp_run_seconds"] = ceil(longest_run)
+        return metrics
 
     def _night_window(self, night: date) -> tuple[datetime, datetime]:
         next_day = night + timedelta(days=1)
@@ -488,7 +528,7 @@ class ReportStore:
         })
 
     def _write_trip_report(self, now: datetime) -> None:
-        metrics = self._metrics(self._start, self._effective_end)
+        metrics = self._metrics(self._start, self._effective_end, include_longest_run=self._dry_run)
         nights = 0
         night = self._start.astimezone(self._zone).date()
         while night <= self._effective_end.astimezone(self._zone).date():
@@ -512,6 +552,8 @@ class ReportStore:
             **faults,
             "ended_early": early,
             "nights_with_lamp_activity": nights,
+            "relay_off_verified": self._relay_off_verified,
+            "led_black_frame_sent": self._led_black_frame_sent,
             "message": f"{self._prefix}{outcome} {activity}" + _fault_message(faults),
         })
 

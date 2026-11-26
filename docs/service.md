@@ -27,7 +27,18 @@ sudo apt-get install -y ca-certificates git python3-venv tzdata
 timedatectl status
 ```
 
-The Pi needs a trustworthy clock after power loss. Use a battery-backed clock or configure your time synchronization provider and its boot wait service. The unit orders startup after `time-sync.target`. Verify that the clock synchronizes after power returns.
+The Pi needs a trustworthy clock after power loss. Use a battery-backed clock or configure your time synchronization provider and its boot wait service. The unit starts after `time-sync.target`, which waits for accurate network time when a synchronization service delays it.
+
+If your Pi uses `systemd-timesyncd` for network time, turn on synchronization and enable its wait service:
+
+```sh
+sudo timedatectl set-ntp true
+sudo systemctl enable systemd-time-wait-sync.service
+systemctl is-enabled systemd-time-wait-sync.service
+timedatectl show --property=NTPSynchronized --value
+```
+
+The checks should report `enabled` and `yes` once network time is available. For a different time provider, enable its equivalent boot wait service. Restart the Pi while home and before arming a trip, then check that the clock is accurate. A network wait service can delay Vacation Ghost until its time source becomes reachable. If you use a battery-backed clock, verify the time after disconnecting and restoring power.
 
 Before continuing, confirm the reported Python version and the Pi’s clock. Test each plug’s power-restore and auto-off settings independently of the Pi.
 
@@ -310,15 +321,25 @@ If shutdown is unconfirmed, stop an installed scheduled service with `sudo syste
 
 If recovery reports a damaged device reservation, leave the reservation, trip state, and original config together. Turn both plugs off using their local switches, disconnect power from the LED strip if fitted, and stop any remaining playback. Check the outputs directly and get help with the damaged record before starting another trip.
 
-After confirmed shutdown, disable the unit if you want to prevent startup at boot.
+After confirmed shutdown, disable the unit to prevent automatic startup at boot.
+
+### Development checkout diagnostics and recovery
+
+The checks in this section apply to the current development checkout. For the tagged Preview 2 installation, use the shutdown and recovery steps above.
+
+- `doctor` identifies unknown configuration keys before hardware checks. It shows the effective LED backend, GPIO pin, and pixel count when glow is enabled, and the configured volume when sound is enabled.
+- Before operating outputs, a development checkout records each Shelly device’s identity. If a plug’s IP address was reassigned, restore the original plugs and their reserved addresses, then repeat `recover` with the original config and state. Recovery can turn off verified plugs and keeps the reservation while any required output remains unconfirmed.
+- A Preview 2 reservation records a fingerprint of the original config. Prefer recovery with the original installation. The development checkout can attempt an off-only recovery using the matching config and warns when it has to rely on its addresses. Check both plugs directly.
+- If recovery confirms shutdown but reports that it could not refresh the JSON status, restore the original state storage and rerun the same `recover` command. The development checkout preserves the shutdown confirmation so it can retry the report update.
 
 ### Start a new trip
 
-After shutdown is confirmed, stop the unit and archive `current` under a fresh name. Keep `/var/lib/vacation-ghost/device` in place. A disarmed or completed trip stays finished after reboot. Changing dates while reusing its state directory prevents startup.
+Confirm shutdown with the original configuration and state directory. Disable startup at boot and stop the unit before archiving `current`. The archive contains the earlier trip’s disarm and completion records. If the old dates are still active, automatic startup with a fresh `current` could resume that trip. Keep `/var/lib/vacation-ghost/device` in place.
 
 ```sh
 (
   set -eu
+  sudo systemctl disable --now vacation-ghost.service
   if sudo test -d /var/lib/vacation-ghost/current; then
     trip_backup=$(sudo mktemp -d /var/lib/vacation-ghost/trip-previous.XXXXXX)
     sudo mv -T /var/lib/vacation-ghost/current "$trip_backup/current"
@@ -327,7 +348,7 @@ After shutdown is confirmed, stop the unit and archive `current` under a fresh n
 )
 ```
 
-Set the new trip dates and run [Check and start](#check-and-start) again. The service creates a fresh `current` directory.
+Set the new trip dates and run [Check and start](#check-and-start) again. The service creates a fresh `current` directory and the commissioning check enables boot startup once the new trip is waiting.
 
 ## Upgrade or switch profiles
 
@@ -508,6 +529,8 @@ sudo -u vacation-ghost -g vacation-ghost cat \
 ```
 
 `latest.json` shows the current state and whether any pending shutdown has been confirmed. `trip.json` preserves what was known when the final report was published, including a shutdown fault that a later recovery may have resolved.
+
+When the development checkout writes `latest.json` or `trip.json`, it includes `relay_off_verified` and `led_black_frame_sent` as booleans or `null`. A true relay value means the controller read back the off state. A true LED value means the driver sent a black frame. Check the lamps and strip directly during a physical test.
 
 ## Share reports locally
 

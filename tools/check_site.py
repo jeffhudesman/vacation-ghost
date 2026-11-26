@@ -112,8 +112,14 @@ def check_source(page):
             ref, path = parts.path.split("/blob/", 1)[1].split("/", 1)
             if ref == "main":
                 current_guides = {
-                    "docs/hardware.md": {"hardware-compatibility", "raspberry-pi-5-simulator-test"},
-                    "docs/service.md": {"lights-only-quick-start", "try-pi-5-tv-glow-from-a-development-checkout"},
+                    "docs/hardware.md": {
+                        "hardware-compatibility", "physical-release-checklist",
+                        "raspberry-pi-5-simulator-test", "restrict-plug-access",
+                    },
+                    "docs/service.md": {
+                        "lights-only-quick-start", "optional-tv-glow-and-sound", "read-reports-locally",
+                        "stop-recover-or-change-trips", "try-pi-5-tv-glow-from-a-development-checkout",
+                    },
                 }
                 assert (
                     path in {"LICENSE", "CONTRIBUTING.md"}
@@ -695,17 +701,24 @@ def check_report_back(page, link, return_hash, *, minimum_distance=0):
 
 def check_demo_entry_points(page, url):
     page.bring_to_front()
-    page.set_viewport_size({"width": 844, "height": 390})
-    page.goto(url)
-    page.locator('.hero a[href="#sample-evening"]').click()
-    assert page.evaluate("location.hash") == "#sample-evening"
-    assert page.locator("#scene-play").inner_text() == "Pause"
-    assert page.locator(".routine-scene").get_attribute("data-scene") == "kitchen"
-    assert_sound_state(page, False)
-    for selector in (".routine-frame", "#scene-play", "#scene-restart", "#scene-next"):
-        box = page.locator(selector).bounding_box()
-        assert 0 <= box["y"] < box["y"] + box["height"] <= 390, (selector, box)
-    assert page.locator("#scene-play").evaluate("play => document.activeElement === play")
+    for width, height in ((667, 375), (740, 360), (844, 390)):
+        page.set_viewport_size({"width": width, "height": height})
+        for motion in ("no-preference", "reduce"):
+            page.emulate_media(reduced_motion=motion)
+            page.goto(f"{url}?demo={width}-{motion}")
+            page.locator('.hero a[href="#sample-evening"]').click()
+            assert page.evaluate("location.hash") == "#sample-evening"
+            assert_sound_state(page, False)
+            focused = "#scene-next" if motion == "reduce" else "#scene-play"
+            assert page.locator(focused).evaluate("button => document.activeElement === button")
+            if motion == "reduce":
+                assert_demo_ready(page)
+            else:
+                assert page.locator("#scene-play").inner_text() == "Pause"
+                assert page.locator(".routine-scene").get_attribute("data-scene") == "kitchen"
+            for selector in (".routine-frame", "#scene-play", "#scene-restart", "#scene-next"):
+                box = page.locator(selector).bounding_box()
+                assert 0 <= box["y"] < box["y"] + box["height"] <= height, (width, motion, selector, box)
     page.goto(f"{url}#sample-report")
     page.reload()
     page.wait_for_function("document.activeElement.id === 'sample-report'", polling=50)
@@ -716,12 +729,39 @@ def check_demo_entry_points(page, url):
     page.reload()
     page.locator('.hero a[href="#sample-evening"]').click()
     assert_demo_ready(page)
-    assert page.locator("#scene-next").evaluate("next => document.activeElement === next")
-    for _ in DEMO_SCENES:
-        page.locator("#scene-next").press("Enter")
+    frame = page.locator(".routine-frame")
+    next_scene = page.locator("#scene-next")
+    assert next_scene.evaluate("button => document.activeElement === button")
+    for control in ("#scene-next", "#scene-previous"):
+        frame.evaluate("frame => window.scrollBy({ top: frame.getBoundingClientRect().bottom + 1, behavior: 'instant' })")
+        assert frame.evaluate("frame => frame.getBoundingClientRect().bottom <= 0")
+        step = page.locator(control)
+        step.press("Enter")
+        assert step.evaluate("button => document.activeElement === button")
+        assert page.locator("#scene-name").inner_text() == "Sunset"
+        stage = frame.bounding_box()
+        assert 0 <= stage["y"] < stage["y"] + stage["height"] <= 568, stage
+        if control == "#scene-next":
+            next_scene.press("Enter")
+            assert page.locator("#scene-name").inner_text() == "After dinner"
+    for _ in list(DEMO_SCENES)[1:]:
+        next_scene.press("Enter")
     assert_sample_report(page, True)
     receipt = page.locator("#sample-report").bounding_box()
     assert 0 <= receipt["y"] < receipt["y"] + receipt["height"] <= 568, receipt
+
+
+def check_faq_disclosure(page, url):
+    from playwright.sync_api import expect
+
+    page.goto(url)
+    disclosure = page.locator(".questions-list details").first
+    summary = disclosure.locator("summary")
+    question = "Does it need an internet connection?"
+    expect(summary).to_have_accessible_name(question)
+    summary.press("Enter")
+    assert disclosure.evaluate("details => details.open")
+    expect(summary).to_have_accessible_name(question)
 
 
 def check_scene_picker_resize(page, url):
@@ -787,6 +827,11 @@ def check_browser(schedule):
                     pi.focus()
                     page.keyboard.press("ArrowLeft")
                     assert page.evaluate("location.hash") == "#setup-panel-simulator"
+                    page.go_back()
+                    assert page.evaluate("location.hash") == "#setup"
+                    page.wait_for_function("document.getElementById('setup-tab-pi').ariaSelected === 'true'")
+                    page.go_forward()
+                    assert page.evaluate("location.hash") == "#setup-panel-simulator"
                     simulator = page.get_by_role("tabpanel", name="Try without hardware")
                     simulator.get_by_role("button", name="Copy commands").click()
                     simulator.get_by_role("button", name="Copied!").wait_for()
@@ -815,6 +860,7 @@ def check_browser(schedule):
                     check_demo_auto_pause(context.new_page(), url)
                     check_scene_picker_resize(context.new_page(), url)
                     check_demo_entry_points(context.new_page(), url)
+                    check_faq_disclosure(context.new_page(), url)
                 page = browser.new_context(java_script_enabled=False, reduced_motion="reduce").new_page()
                 page.bring_to_front()
                 page.goto(f"{url}#setup-panel-pi")

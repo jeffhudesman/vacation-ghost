@@ -2,13 +2,17 @@
 
 import fcntl
 import json
+import logging
 import os
+import re
 import stat
 import tempfile
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 
 
+logger = logging.getLogger(__name__)
 DEVICE_DIR = Path("/var/lib/vacation-ghost/device")
 
 
@@ -125,13 +129,18 @@ def remove_record(path: Path) -> None:
 class OutputReservation:
     """An outstanding shutdown must be recovered by its original state directory."""
 
-    def __init__(self, state_dir: Path, device_dir: Path | None = None, *, hardware_id: str = ""):
+    def __init__(
+        self, state_dir: Path, device_dir: Path | None = None, *, hardware_id: str = "",
+        identify_plugs: Callable[[], dict[str, str]] | None = None,
+    ):
         if device_dir is not None and (not isinstance(hardware_id, str) or not hardware_id):
             raise ValueError("a hardware identity is required for a modern output reservation")
         self.state_dir = state_dir.resolve()
         self.legacy = self.state_dir / ".outputs-active"
         self.path = device_dir / "outputs.json" if device_dir is not None else self.legacy
         self.hardware_id = hardware_id
+        self._identify_plugs = identify_plugs
+        self.plug_identities: dict[str, str] | None = None
         self.glow_pending = self._legacy_exists()
         if self.path != self.legacy:
             try:
@@ -143,6 +152,8 @@ class OutputReservation:
                     f"Cannot use pending shutdown record {self.path}. Switch the affected outputs off manually "
                     f"and preserve the reservation for diagnosis. {exc}"
                 ) from exc
+        self._confirmation_path = self.state_dir / ".shutdown-confirmed.json"
+        self._shutdown_confirmation = self._read_shutdown_confirmation()
 
     def _legacy_exists(self) -> bool:
         # The original marker was only an empty file, so its contents are immaterial.
@@ -164,18 +175,48 @@ class OutputReservation:
             raise RuntimeError(f"shutdown is still pending for {owner}; recover it before using another state directory")
         if hardware != self.hardware_id:
             raise ValueError("restore the original plug and LED configuration before retrying shutdown")
+        if "plug_identities" in record:
+            self.plug_identities = self._validate_plug_identities(record["plug_identities"])
         self.glow_pending = self.glow_pending or glow_pending
+
+    @staticmethod
+    def _validate_plug_identities(value: object) -> dict[str, str]:
+        if not isinstance(value, dict) or len(value) != 2 or any(
+            not isinstance(room, str) or not room or not isinstance(mac, str) or not re.fullmatch(r"[0-9a-f]{12}", mac)
+            for room, mac in value.items()
+        ) or len(set(value.values())) != 2:
+            raise InvalidState("pending shutdown record requires two distinct Shelly plug identities")
+        return value.copy()
+
+    def _read_shutdown_confirmation(self) -> dict | None:
+        try:
+            record = read_record(self._confirmation_path)
+            if record is None or record.get("hardware_id") != self.hardware_id:
+                return None
+            sent = record.get("led_black_frame_sent")
+            if "led_black_frame_sent" not in record or (sent is not None and not isinstance(sent, bool)):
+                raise InvalidState("invalid LED shutdown result")
+            return record
+        except (OSError, InvalidState) as exc:
+            logger.warning("Could not read shutdown confirmation %s: %s", self._confirmation_path, exc)
+            return None
 
     @property
     def engaged(self) -> bool:
         return self.path.exists() or self.legacy.exists()
 
     def engage(self) -> None:
-        write_record(self.path, {
+        if self.plug_identities is None and self._identify_plugs is not None:
+            self.plug_identities = self._validate_plug_identities(self._identify_plugs())
+        self.clear_shutdown_confirmation()
+        record = {
             "state_dir": str(self.state_dir),
             "hardware_id": self.hardware_id,
             "glow_pending": self.glow_pending,
-        })
+        }
+        if self.plug_identities is not None:
+            record["plug_identities"] = self.plug_identities
+        write_record(self.path, record)
 
     def before_glow(self) -> None:
         if not self.glow_pending:
@@ -187,3 +228,24 @@ class OutputReservation:
             remove_record(self.legacy)
         remove_record(self.path)
         self.glow_pending = False
+
+    @property
+    def shutdown_confirmed(self) -> bool:
+        return self._shutdown_confirmation is not None
+
+    @property
+    def led_black_frame_sent(self) -> bool | None:
+        if self._shutdown_confirmation is None:
+            return None
+        return self._shutdown_confirmation["led_black_frame_sent"]
+
+    def confirm_shutdown(self, *, led_black_frame_sent: bool | None = None) -> None:
+        record = {"hardware_id": self.hardware_id, "led_black_frame_sent": led_black_frame_sent}
+        write_record(self._confirmation_path, record)
+        self._shutdown_confirmation = record
+        self.clear()
+
+    def clear_shutdown_confirmation(self) -> None:
+        if self._confirmation_path.exists() or self._confirmation_path.is_symlink():
+            remove_record(self._confirmation_path)
+        self._shutdown_confirmation = None

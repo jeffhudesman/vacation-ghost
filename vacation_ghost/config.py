@@ -107,10 +107,30 @@ def _hardware(table: dict, rooms: tuple[str, str], directory: Path) -> Hardware:
     )
 
 
-def load_config(path: Path, *, validate_sunset: bool = True) -> Config:
+def _validate_settings(document: dict) -> None:
+    sections = {
+        "trip": {"start", "end", "timezone"},
+        "routine": {"rooms", "sunset", "bedtime", "latitude", "longitude", "seed"},
+        "hardware": {"plugs", "led_count", "led_backend", "led_pin", "sounds_dir", "volume"},
+    }
+    unknown = document.keys() - sections.keys()
+    for section, allowed in sections.items():
+        if section not in document:
+            continue
+        table = document[section]
+        if not isinstance(table, dict):
+            raise ValueError(f"[{section}] must be a table")
+        unknown.update(f"{section}.{name}" for name in table.keys() - allowed)
+    if unknown:
+        raise ValueError("Unrecognized configuration settings " + ", ".join(sorted(unknown)))
+
+
+def load_config(path: Path, *, validate_sunset: bool = True, validate_settings: bool = False) -> Config:
     try:
         with path.open("rb") as stream:
             document = tomllib.load(stream)
+        if validate_settings:
+            _validate_settings(document)
         trip = document["trip"]
         routine = document["routine"]
         timezone = ZoneInfo(trip["timezone"])

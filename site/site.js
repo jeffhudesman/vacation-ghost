@@ -136,7 +136,9 @@ function setupEveningDemo() {
 
   function keepFrameInView() {
     const { top, bottom } = frame.getBoundingClientRect();
-    if (bottom <= 0 || top >= innerHeight) card.scrollIntoView({ block: "start", behavior: "instant" });
+    if (top >= 0 && bottom <= innerHeight) return false;
+    card.scrollIntoView({ block: "start", behavior: "instant" });
+    return true;
   }
 
   playButton.addEventListener("click", () => {
@@ -171,24 +173,26 @@ function setupEveningDemo() {
   });
 
   function selectScene(index) {
-    if (!demoScenes[index]) return;
+    if (!demoScenes[index]) return false;
     clearTimeout(timer);
     remaining = sceneDuration;
     showScene(index);
     if (index === lastScene) setPlayback("finished");
     else if (playState === "playing" || playState === "paused") setPlayback("paused");
     else setPlayback("ready");
+    return true;
   }
 
-  previous.addEventListener("click", () => selectScene((sceneIndex ?? 0) - 1));
-  next.addEventListener("click", () => selectScene((sceneIndex ?? -1) + 1));
+  for (const [button, step] of [[previous, -1], [next, 1]]) {
+    button.addEventListener("click", () => {
+      if (selectScene((sceneIndex ?? -1) + step)) keepFrameInView();
+    });
+  }
 
   for (const button of sceneButtons) {
     button.addEventListener("click", () => {
       selectScene(demoScenes.findIndex(({ name }) => name === button.dataset.sceneButton));
-      const { top, bottom } = frame.getBoundingClientRect();
-      if (top < 0 || bottom > innerHeight) {
-        card.scrollIntoView({ block: "start", behavior: "instant" });
+      if (keepFrameInView()) {
         (sceneIndex === lastScene ? report : caption).focus({ preventScroll: true });
       }
     });
@@ -248,7 +252,21 @@ function selectTab(selected) {
   }
 }
 
+function activeSetupTab() {
+  return tabs.find((tab) => tab.getAttribute("aria-selected") === "true");
+}
+
+function setupTabForHistoryEntry() {
+  const state = window.history.state;
+  const saved = tabs.find((tab) => tab.id === state?.setupTab);
+  if (saved) return saved;
+  const active = activeSetupTab();
+  window.history.replaceState({ ...state, setupTab: active.id }, "");
+  return active;
+}
+
 function activateTab(selected) {
+  if (location.hash === "#setup") setupTabForHistoryEntry();
   selectTab(selected);
   const hash = `#${selected.getAttribute("aria-controls")}`;
   if (window.location.hash !== hash) {
@@ -275,6 +293,10 @@ function restoreReportOrigin() {
 
 function selectTabFromHash(initialLoad = false) {
   const hash = window.location.hash;
+  if (hash === "#setup") {
+    selectTab(setupTabForHistoryEntry());
+    return;
+  }
   const index = panels.findIndex((panel) => `#${panel.id}` === hash);
   if (index === -1) return;
   selectTab(tabs[index]);
@@ -336,8 +358,7 @@ for (const link of document.querySelectorAll('a[href="#sample-report"]')) {
     if (!followsHere(event)) return;
     event.preventDefault();
     if (window.location.hash !== "#sample-report") {
-      const tab = tabs.find((option) => option.getAttribute("aria-selected") === "true");
-      const reportReturn = { tab: tab.id, top: window.scrollY, focus: link.id };
+      const reportReturn = { tab: activeSetupTab().id, top: window.scrollY, focus: link.id };
       window.history.replaceState({ ...window.history.state, reportReturn }, "");
       window.history.pushState(null, "", "#sample-report");
     }
