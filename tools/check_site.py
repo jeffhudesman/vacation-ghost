@@ -106,6 +106,8 @@ def check_source(page):
         parts = urlsplit(url)
         if not parts.netloc:
             assert (SITE / parts.path).is_file() if parts.path else parts.fragment in page.ids, url
+        elif parts.netloc == "vacationghost.com" and parts.path.startswith("/assets/"):
+            assert (SITE / parts.path.lstrip("/")).is_file(), url
         elif url.startswith(f"{REPOSITORY}/blob/"):
             ref, path = parts.path.split("/blob/", 1)[1].split("/", 1)
             if ref == "main":
@@ -241,11 +243,12 @@ def assert_window_lamps(page, kitchen, living):
     assert actual == [kitchen, living, 0], actual
 
 
-def assert_read_note(page, visible):
-    link = page.locator("#scene-read-note")
-    assert link.get_attribute("href") == "#sample-report"
-    assert link.is_visible() == visible
-    assert page.get_by_role("link", name="Read the morning note", exact=True).count() == int(visible)
+def assert_sample_report(page, visible):
+    report = page.locator("#sample-report")
+    assert report.is_visible() == visible
+    if visible:
+        assert report.locator("figcaption").inner_text() == "Sample simulator report"
+        assert report.locator("p").inner_text() == "Your trip reports stay on your Pi."
 
 
 def assert_sound_state(page, enabled):
@@ -269,11 +272,11 @@ def assert_demo_ready(page):
     assert_window_lamps(page, 0, 0)
     assert page.locator('[data-scene-button][aria-pressed="true"]').count() == 0
     assert_progress(page.locator("#scene-progress"), 0)
-    assert_read_note(page, False)
+    assert_sample_report(page, False)
 
 
 def check_scene_selection(page, width, height, schedule):
-    page.get_by_role("link", name="Watch the 21-second demo", exact=True).click()
+    page.locator('.hero a[href="#sample-evening"]').click()
     assert_demo_ready(page)
     picker = page.locator(".routine-picker")
     assert picker.locator("summary").inner_text() == "Jump to a scene", width
@@ -292,6 +295,25 @@ def check_scene_selection(page, width, height, schedule):
     page.mouse.click(x, y)
     paused = page.get_by_role("button", name="Resume", exact=True)
     assert paused.bounding_box() == initial, width
+    steps = page.get_by_role("group", name="Manual playback")
+    previous = steps.get_by_role("button", name="Previous scene")
+    next_scene = steps.get_by_role("button", name="Next scene")
+    assert previous.is_disabled()
+    frame = page.locator(".routine-frame")
+    initial_frame = frame.bounding_box()
+    step_controls = steps.bounding_box()
+    assert initial_frame["y"] >= 0 and initial_frame["y"] + initial_frame["height"] <= height, width
+    for label in list(DEMO_SCENES)[1:]:
+        next_scene.click()
+        assert_scheduled_state(page, label, schedule)
+        assert steps.bounding_box() == step_controls, (width, label)
+        assert frame.bounding_box() == initial_frame, (width, label)
+    assert next_scene.is_disabled()
+    assert_sample_report(page, True)
+    assert page.locator("#sample-report").bounding_box() == initial_frame, width
+    previous.click()
+    assert_scheduled_state(page, "Morning kitchen", schedule)
+    assert_sample_report(page, False)
 
     if width <= 480:
         picker.locator("summary").click()
@@ -302,28 +324,28 @@ def check_scene_selection(page, width, height, schedule):
     assert 0 <= first_scene.bounding_box()["y"] < height, width
     assert_sound_state(page, False)
     assert page.locator("#scene-audio").get_attribute("src") is None, width
-    assert_scene(page, group, "Sunset")
+    assert_scene(page, group, "Morning kitchen")
     progress = page.locator("#scene-progress")
     for index, label in enumerate(DEMO_SCENES):
         group.get_by_role("button", name=label, exact=True).click()
         assert_scene(page, group, label)
         assert_scheduled_state(page, label, schedule)
         assert_progress(progress, index * SCENE_SECONDS)
-        assert_read_note(page, label == "Morning note")
+        frame_box = frame.bounding_box()
+        assert frame_box["y"] >= 0 and frame_box["y"] + frame_box["height"] <= height, (width, label)
+        assert_sample_report(page, label == "Morning note")
         if label == "TV time":
             assert page.locator(".routine-scene").evaluate("""scene =>
                 scene.getAnimations({ subtree: true }).length === 0
             """), width
-    note_link = page.get_by_role("link", name="Read the morning note", exact=True)
-    check_report_back(page, note_link, "#sample-evening")
-    assert page.locator("#sample-report").is_visible(), width
     card = page.locator(".routine-card").bounding_box()
     controls = [
         *group.get_by_role("button").all(),
         page.locator("#scene-play"),
         page.locator("#scene-restart"),
         page.locator("#scene-sound"),
-        note_link,
+        previous,
+        next_scene,
     ]
     for control in controls:
         box = control.bounding_box()
@@ -339,7 +361,7 @@ def check_scene_selection(page, width, height, schedule):
         assert link.bounding_box()["y"] >= note["y"] + note["height"], width
     simulator_link.click()
     assert page.evaluate("location.hash") == "#setup-panel-simulator", width
-    assert page.get_by_role("tabpanel", name="Run the Linux simulator").is_visible(), width
+    assert page.locator("#setup-panel-simulator").is_visible(), width
     parts_link.click()
     assert page.evaluate("location.hash") == "#parts", width
 
@@ -412,7 +434,7 @@ def check_demo_playback(page, url):
     assert play.inner_text() == "Pause"
     assert_scene(page, group, "Sunset")
     assert_window_lamps(page, 1, 0)
-    assert_read_note(page, False)
+    assert_sample_report(page, False)
     for seconds in (1, 2):
         page.clock.run_for(1000)
         assert_scene(page, group, "Sunset")
@@ -427,7 +449,7 @@ def check_demo_playback(page, url):
     assert_progress(progress, 4.2, tolerance=FRAME_TOLERANCE_SECONDS)
     play.dispatch_event("click")
     assert play.inner_text() == "Resume"
-    assert_read_note(page, False)
+    assert_sample_report(page, False)
     frozen = assert_progress(progress, 4.2, tolerance=1e-6)
     page.clock.run_for(2 * SCENE_DELAY)
     assert_scene(page, group, "After dinner")
@@ -462,7 +484,7 @@ def check_demo_playback(page, url):
     assert page.evaluate("window.demoAudioCalls.play") == [DEMO_AUDIO[0]]
     assert play.inner_text() == "Complete"
     assert play.is_disabled()
-    assert_read_note(page, True)
+    assert_sample_report(page, True)
     assert_progress(progress, DEMO_DURATION)
     assert page.locator("#sample-report").get_attribute("data-current") == "true"
     page.clock.run_for(SCENE_DELAY)
@@ -473,20 +495,20 @@ def check_demo_playback(page, url):
     assert play.inner_text() == "Pause"
     assert_scene(page, group, "Sunset")
     assert_progress(progress, 0)
-    assert_read_note(page, False)
+    assert_sample_report(page, False)
     assert page.locator("#sample-report").get_attribute("data-current") is None
     page.clock.run_for(int(DEMO_DURATION * 1000) - 1)
     assert_scene(page, group, "Morning kitchen")
-    assert_read_note(page, False)
+    assert_sample_report(page, False)
     page.clock.run_for(1)
     assert_scene(page, group, "Morning note")
     assert_progress(progress, DEMO_DURATION)
-    assert_read_note(page, True)
+    assert_sample_report(page, True)
 
     restart.dispatch_event("click")
     group.get_by_role("button", name="Late TV").dispatch_event("click")
     assert play.inner_text() == "Resume"
-    assert_read_note(page, False)
+    assert_sample_report(page, False)
     assert_progress(progress, 4 * SCENE_SECONDS)
     page.clock.run_for(2 * SCENE_DELAY)
     assert_scene(page, group, "Late TV")
@@ -533,22 +555,23 @@ def check_demo_auto_pause(page, url):
 
     open_clocked_demo(page, url)
     card = page.locator(".routine-card")
+    frame = page.locator(".routine-frame")
     group = page.get_by_role("group", name="Sample scenes")
     play = page.locator("#scene-play")
     progress = page.locator("#scene-progress")
     # Wait for a rendered onscreen entry before exercising the transition offscreen.
-    card.evaluate("""card => {
+    frame.evaluate("""frame => {
         new IntersectionObserver(([entry]) => {
-            card.dataset.testIntersecting = String(entry.isIntersecting);
-        }).observe(card);
+            frame.dataset.testIntersecting = String(entry.isIntersecting);
+        }).observe(frame);
     }""")
-    expect(card).to_have_attribute("data-test-intersecting", "true", timeout=3000)
+    expect(frame).to_have_attribute("data-test-intersecting", "true", timeout=3000)
     play.dispatch_event("click")
     page.clock.run_for(1200)
 
-    page.locator("#setup").evaluate("heading => heading.scrollIntoView({ block: 'start', behavior: 'instant' })")
-    assert card.evaluate("card => card.getBoundingClientRect().bottom <= 0")
-    expect(card).to_have_attribute("data-test-intersecting", "false", timeout=3000)
+    frame.evaluate("frame => window.scrollBy({ top: frame.getBoundingClientRect().bottom + 1, behavior: 'instant' })")
+    assert card.evaluate("card => card.getBoundingClientRect().bottom > 0")
+    expect(frame).to_have_attribute("data-test-intersecting", "false", timeout=3000)
     expect(play).to_have_text("Resume", timeout=3000)
     frozen = assert_progress(progress, 1.2, tolerance=1e-6)
     page.clock.run_for(2 * SCENE_DELAY)
@@ -556,7 +579,7 @@ def check_demo_auto_pause(page, url):
     assert_progress(progress, frozen)
 
     card.evaluate("card => card.scrollIntoView({ block: 'start', behavior: 'instant' })")
-    expect(card).to_have_attribute("data-test-intersecting", "true", timeout=3000)
+    expect(frame).to_have_attribute("data-test-intersecting", "true", timeout=3000)
     page.clock.run_for(2 * SCENE_DELAY)
     assert play.inner_text() == "Resume"
     assert_scene(page, group, "Sunset")
@@ -601,7 +624,7 @@ def check_demo_auto_pause(page, url):
 
 
 def check_pi_landing(page, width, height):
-    panel = page.get_by_role("tabpanel", name="Install on a Pi")
+    panel = page.get_by_role("tabpanel", name="Build with two lamps")
     assert panel.is_visible(), width
     page.wait_for_function("""() => {
         const heading = document.querySelector('#setup');
@@ -614,20 +637,86 @@ def check_pi_landing(page, width, height):
     ):
         box = locator.bounding_box()
         assert box is not None and 0 <= box["y"] < height, (width, locator, box)
-    guide = page.get_by_role("link", name="Start the lights-only setup", exact=True)
+    guide = panel.get_by_role("link", name="Start the lights-only setup", exact=True)
     assert guide.get_attribute("href").endswith("/docs/service.md#lights-only-quick-start"), width
+    assert guide.bounding_box()["height"] >= 44, width
+
+
+def check_parts_paths(page, width):
+    parts = page.get_by_role("region", name="Check your hardware.")
+    assert parts.locator(".parts-list > li").count() == 4, width
+    assert parts.locator(".parts-status").bounding_box()["y"] < parts.locator(".parts-paths").bounding_box()["y"], width
+    if width <= 760:
+        assert parts.locator(".parts-paths").bounding_box()["y"] < parts.locator(".parts-figure").bounding_box()["y"], width
+    for name, panel_id in (
+        ("Try without hardware", "#setup-panel-simulator"), ("Build with two lamps", "#setup-panel-pi"),
+    ):
+        path = parts.get_by_role("link", name=name, exact=True)
+        assert path.get_attribute("href") == panel_id, width
+        assert path.bounding_box()["height"] >= 44, width
+        path.click()
+        assert page.evaluate("location.hash") == panel_id, width
+        assert page.get_by_role("tabpanel", name=name, exact=True).is_visible(), width
+
+
+def check_pi_doctor(page, width):
+    panel = page.get_by_role("tabpanel", name="Build with two lamps")
+    summary = panel.get_by_text("Check both plugs after installation", exact=True)
+    command = panel.get_by_role("region", name="Pi diagnostic terminal command")
+    assert command.count() == 0, width
+    assert summary.bounding_box()["height"] >= 44, width
+    summary.press("Enter")
+    assert command.is_visible(), width
+    panel.get_by_role("button", name="Copy commands").click()
+    panel.get_by_role("button", name="Copied!").wait_for()
+    assert page.evaluate("navigator.clipboard.readText()") == command.locator("code").text_content(), width
+    summary.press("Enter")
+    assert command.count() == 0, width
 
 
 def check_report_back(page, link, return_hash, *, minimum_distance=0):
     link.scroll_into_view_if_needed()
     reading_position = page.evaluate("window.scrollY")
-    link.click()
+    link.focus()
+    link.press("Enter")
     assert page.evaluate("location.hash") == "#sample-report"
     assert abs(page.evaluate("window.scrollY") - reading_position) >= minimum_distance
     assert page.locator("#sample-report").evaluate("note => document.activeElement === note")
     page.go_back()
     page.wait_for_function("position => Math.abs(window.scrollY - position) <= 2", arg=reading_position)
     assert page.evaluate("location.hash") == return_hash
+    page.wait_for_function("document.activeElement.id === 'setup-simulator-report'")
+
+
+def check_demo_entry_points(page, url):
+    page.bring_to_front()
+    page.set_viewport_size({"width": 844, "height": 390})
+    page.goto(url)
+    page.locator('.hero a[href="#sample-evening"]').click()
+    assert page.evaluate("location.hash") == "#sample-evening"
+    assert page.locator("#scene-play").inner_text() == "Pause"
+    assert page.locator(".routine-scene").get_attribute("data-scene") == "kitchen"
+    assert_sound_state(page, False)
+    for selector in (".routine-frame", "#scene-play", "#scene-restart", "#scene-next"):
+        box = page.locator(selector).bounding_box()
+        assert 0 <= box["y"] < box["y"] + box["height"] <= 390, (selector, box)
+    assert page.locator("#scene-play").evaluate("play => document.activeElement === play")
+    page.goto(f"{url}#sample-report")
+    page.reload()
+    page.wait_for_function("document.activeElement.id === 'sample-report'", polling=50)
+    assert_sample_report(page, True)
+    page.set_viewport_size({"width": 320, "height": 568})
+    page.emulate_media(reduced_motion="reduce")
+    page.goto(url)
+    page.reload()
+    page.locator('.hero a[href="#sample-evening"]').click()
+    assert_demo_ready(page)
+    assert page.locator("#scene-next").evaluate("next => document.activeElement === next")
+    for _ in DEMO_SCENES:
+        page.locator("#scene-next").press("Enter")
+    assert_sample_report(page, True)
+    receipt = page.locator("#sample-report").bounding_box()
+    assert 0 <= receipt["y"] < receipt["y"] + receipt["height"] <= 568, receipt
 
 
 def check_scene_picker_resize(page, url):
@@ -661,7 +750,7 @@ def check_browser(schedule):
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch(executable_path=executable)
                 url = f"http://127.0.0.1:{server.server_port}/"
-                for width, height in ((280, 640), (320, 640), (333, 490), (390, 844), (430, 932), (761, 900), (1440, 940)):
+                for width, height in ((280, 640), (320, 640), (333, 490), (390, 844), (430, 932), (761, 900), (1440, 768)):
                     context = browser.new_context(
                         viewport={"width": width, "height": height}, reduced_motion="reduce",
                         permissions=["clipboard-read", "clipboard-write"],
@@ -671,25 +760,29 @@ def check_browser(schedule):
                     page.on("pageerror", lambda error: errors.append(str(error)))
                     page.goto(url)
                     hero = page.locator(".hero")
-                    status = hero.locator(".release-status").bounding_box()
-                    assert status["y"] + status["height"] < height, width
-                    for name in ("Try the Linux simulator", "Build on a Raspberry Pi"):
-                        target = hero.get_by_role("link", name=name)
-                        assert target.bounding_box()["height"] >= 44, (width, name)
-                    check_scene_selection(page, width, height, schedule)
-                    page.get_by_role("link", name="Build on a Raspberry Pi").click()
-                    pi = page.get_by_role("tab", name="Install on a Pi")
-                    assert page.evaluate("location.hash") == "#setup-panel-pi", width
-                    check_pi_landing(page, width, height)
-                    page.get_by_role("link", name="What you need", exact=True).click()
+                    page.evaluate("document.fonts.ready")
+                    watch = hero.get_by_role("link", name="Watch an evening · 21 sec", exact=True)
+                    watch_box = watch.bounding_box()
+                    assert watch.get_attribute("href") == "#sample-evening"
+                    assert watch_box["height"] >= 44 and watch_box["y"] + watch_box["height"] <= height, width
+                    build = hero.get_by_role("link", name="Build it on a Pi", exact=True)
+                    assert build.get_attribute("href") == "#parts" and build.bounding_box()["height"] >= 44, width
                     if width <= 760:
-                        assert page.locator(".parts-list").bounding_box()["y"] < page.locator(".parts-figure").bounding_box()["y"]
+                        image = hero.locator(".hero-figure").bounding_box()
+                        assert watch_box["y"] < image["y"] < height, width
+                        assert build.bounding_box()["y"] >= image["y"] + image["height"], width
+                    check_scene_selection(page, width, height, schedule)
+                    check_parts_paths(page, width)
+                    pi = page.get_by_role("tab", name="Build with two lamps")
+                    check_pi_landing(page, width, height)
+                    check_pi_doctor(page, width)
+                    page.get_by_role("link", name="What you need", exact=True).click()
                     page.get_by_role("link", name="Setup", exact=True).click()
                     assert pi.get_attribute("aria-selected") == "true"
                     pi.focus()
                     page.keyboard.press("ArrowLeft")
                     assert page.evaluate("location.hash") == "#setup-panel-simulator"
-                    simulator = page.get_by_role("tabpanel", name="Run the Linux simulator")
+                    simulator = page.get_by_role("tabpanel", name="Try without hardware")
                     simulator.get_by_role("button", name="Copy commands").click()
                     simulator.get_by_role("button", name="Copied!").wait_for()
                     assert page.evaluate("navigator.clipboard.readText()") == simulator.locator("#setup-code-simulator").text_content()
@@ -716,7 +809,9 @@ def check_browser(schedule):
                     check_demo_selected_start(context.new_page(), url)
                     check_demo_auto_pause(context.new_page(), url)
                     check_scene_picker_resize(context.new_page(), url)
-                page = browser.new_context(java_script_enabled=False).new_page()
+                    check_demo_entry_points(context.new_page(), url)
+                page = browser.new_context(java_script_enabled=False, reduced_motion="reduce").new_page()
+                page.bring_to_front()
                 page.goto(f"{url}#setup-panel-pi")
                 for selector in ("#setup-panel-simulator", "#setup-panel-pi", "#sample-report"):
                     assert page.locator(selector).is_visible(), selector
@@ -725,7 +820,10 @@ def check_browser(schedule):
                 assert page.locator(".routine-scene").get_attribute("data-scene") == "kitchen"
                 assert_scheduled_state(page, "Sunset", schedule)
                 assert_window_lamps(page, 1, 0)
-                assert_read_note(page, False)
+                transcript = page.get_by_text("Read the sample evening", exact=True)
+                transcript.press("Enter")
+                assert page.locator(".routine-transcript ol").is_visible()
+                assert_sample_report(page, True)
         finally:
             server.shutdown()
             thread.join()

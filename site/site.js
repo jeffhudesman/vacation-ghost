@@ -11,7 +11,7 @@ const demoScenes = [
   { name: "morning", title: "Morning kitchen", time: "07:18", label: "7:18 AM", lamp: "kitchen", period: "dawn", cue: "kettle",
     text: "The kitchen lamp is on. The optional kettle sound plays." },
   { name: "report", title: "Morning note", time: "08:00", label: "8:00 AM", period: "dawn",
-    text: "The Pi saves the morning note." },
+    text: "The example morning report is ready." },
 ];
 
 function setupEveningDemo() {
@@ -23,11 +23,14 @@ function setupEveningDemo() {
   if (!playButton || !restartButton || !soundButton || !audio) return;
 
   const scene = card.querySelector(".routine-scene");
+  const frame = card.querySelector(".routine-frame");
+  const caption = card.querySelector(".scene-caption");
   const sceneName = card.querySelector("#scene-name");
   const sceneTime = card.querySelector("#scene-time");
   const sceneText = card.querySelector("#scene-text");
   const soundState = card.querySelector("#scene-sound-state");
-  const readNote = card.querySelector("#scene-read-note");
+  const previous = card.querySelector("#scene-previous");
+  const next = card.querySelector("#scene-next");
   const progress = card.querySelector("#scene-progress");
   const report = card.querySelector(".demo-report");
   const sceneButtons = [...card.querySelectorAll("[data-scene-button]")];
@@ -63,7 +66,6 @@ function setupEveningDemo() {
     playButton.textContent = playLabels[state];
     const finished = state === "finished";
     playButton.setAttribute("aria-disabled", String(finished));
-    readNote.hidden = !finished;
     cancelAnimationFrame(progressFrame);
     if (state === "playing") {
       card.dataset.playing = "true";
@@ -111,8 +113,12 @@ function setupEveningDemo() {
     }
     sceneText.textContent = text;
     updateProgress();
-    if (index === lastScene) report.dataset.current = "true";
+    const isReport = index === lastScene;
+    report.hidden = !isReport;
+    if (isReport) report.dataset.current = "true";
     else delete report.dataset.current;
+    previous.setAttribute("aria-disabled", String(index === null || index === 0));
+    next.setAttribute("aria-disabled", String(isReport));
     for (const button of sceneButtons) {
       button.setAttribute("aria-pressed", String(button.dataset.sceneButton === name));
     }
@@ -128,25 +134,34 @@ function setupEveningDemo() {
     }, delay);
   }
 
+  function keepFrameInView() {
+    const { top, bottom } = frame.getBoundingClientRect();
+    if (bottom <= 0 || top >= innerHeight) card.scrollIntoView({ block: "start", behavior: "instant" });
+  }
+
   playButton.addEventListener("click", () => {
     if (playState === "playing") {
       pausePlayback();
       return;
     }
     if (playState === "finished") return;
+    keepFrameInView();
     if (sceneIndex === null) showScene(0);
     else playCue();
     advanceAfter(remaining);
     setPlayback("playing");
   });
 
-  restartButton.addEventListener("click", () => {
+  function restartPlayback() {
+    keepFrameInView();
     clearTimeout(timer);
     remaining = sceneDuration;
     showScene(0);
     advanceAfter(remaining);
     setPlayback("playing");
-  });
+  }
+
+  restartButton.addEventListener("click", restartPlayback);
 
   soundButton.addEventListener("click", () => {
     soundEnabled = !soundEnabled;
@@ -155,16 +170,27 @@ function setupEveningDemo() {
     playCue();
   });
 
+  function selectScene(index) {
+    if (!demoScenes[index]) return;
+    clearTimeout(timer);
+    remaining = sceneDuration;
+    showScene(index);
+    if (index === lastScene) setPlayback("finished");
+    else if (playState === "playing" || playState === "paused") setPlayback("paused");
+    else setPlayback("ready");
+  }
+
+  previous.addEventListener("click", () => selectScene((sceneIndex ?? 0) - 1));
+  next.addEventListener("click", () => selectScene((sceneIndex ?? -1) + 1));
+
   for (const button of sceneButtons) {
-    const index = demoScenes.findIndex(({ name }) => name === button.dataset.sceneButton);
-    if (index === -1) continue;
     button.addEventListener("click", () => {
-      clearTimeout(timer);
-      remaining = sceneDuration;
-      showScene(index);
-      if (index === lastScene) setPlayback("finished");
-      else if (playState === "playing" || playState === "paused") setPlayback("paused");
-      else setPlayback("ready");
+      selectScene(demoScenes.findIndex(({ name }) => name === button.dataset.sceneButton));
+      const { top, bottom } = frame.getBoundingClientRect();
+      if (top < 0 || bottom > innerHeight) {
+        card.scrollIntoView({ block: "start", behavior: "instant" });
+        (sceneIndex === lastScene ? report : caption).focus({ preventScroll: true });
+      }
     });
   }
 
@@ -178,18 +204,34 @@ function setupEveningDemo() {
 
   new IntersectionObserver(([entry]) => {
     if (!entry.isIntersecting) pausePlayback();
-  }).observe(card);
+  }).observe(frame);
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) pausePlayback();
   });
   window.addEventListener("pagehide", pausePlayback);
 
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const watch = document.querySelector('.hero a[href="#sample-evening"]');
+  watch?.addEventListener("click", (event) => {
+    if (!followsHere(event)) return;
+    event.preventDefault();
+    if (location.hash !== "#sample-evening") history.pushState(null, "", "#sample-evening");
+    card.scrollIntoView({ block: "start", behavior: "instant" });
+    if (reduced.matches) next.focus({ preventScroll: true });
+    else {
+      restartPlayback();
+      playButton.focus({ preventScroll: true });
+    }
+  });
+
+  card.dataset.interactive = "true";
   showScene();
   setPlayback("ready");
   card.querySelector(".routine-interactions").hidden = false;
+  return () => selectScene(lastScene);
 }
 
-setupEveningDemo();
+const showEveningReport = setupEveningDemo();
 
 const setupTabs = document.querySelector(".setup-tabs");
 const tabs = [...setupTabs.querySelectorAll("[role=tab]")];
@@ -219,15 +261,19 @@ function reachSetupHeading() {
   setupHeading.scrollIntoView();
 }
 
-function selectTabFromHash(restoreScroll = false, initialLoad = false) {
+function restoreReportOrigin() {
   const returnTo = window.history.state?.reportReturn;
   const savedTab = tabs.find((tab) => tab.id === returnTo?.tab);
-  if (restoreScroll && savedTab && Number.isFinite(returnTo.top)) {
-    selectTab(savedTab);
-    requestAnimationFrame(() => window.scrollTo({ top: returnTo.top, behavior: "instant" }));
-    return;
-  }
+  if (!savedTab || !Number.isFinite(returnTo.top)) return false;
+  selectTab(savedTab);
+  requestAnimationFrame(() => {
+    window.scrollTo({ top: returnTo.top, behavior: "instant" });
+    document.getElementById(returnTo.focus)?.focus({ preventScroll: true });
+  });
+  return true;
+}
 
+function selectTabFromHash(initialLoad = false) {
   const hash = window.location.hash;
   const index = panels.findIndex((panel) => `#${panel.id}` === hash);
   if (index === -1) return;
@@ -240,6 +286,13 @@ function selectTabFromHash(restoreScroll = false, initialLoad = false) {
   } else {
     requestAnimationFrame(reachSetupHeading);
   }
+}
+
+function reachReport() {
+  showEveningReport();
+  const report = document.getElementById("sample-report");
+  report.focus({ preventScroll: true });
+  report.scrollIntoView({ block: "nearest", behavior: "instant" });
 }
 
 function followsHere(event) {
@@ -280,16 +333,29 @@ for (const [index, panel] of panels.entries()) {
 
 for (const link of document.querySelectorAll('a[href="#sample-report"]')) {
   link.addEventListener("click", (event) => {
-    if (!followsHere(event) || window.location.hash === "#sample-report") return;
-    const tab = tabs.find((option) => option.getAttribute("aria-selected") === "true");
-    window.history.replaceState({ ...window.history.state, reportReturn: { tab: tab.id, top: window.scrollY } }, "");
+    if (!followsHere(event)) return;
+    event.preventDefault();
+    if (window.location.hash !== "#sample-report") {
+      const tab = tabs.find((option) => option.getAttribute("aria-selected") === "true");
+      const reportReturn = { tab: tab.id, top: window.scrollY, focus: link.id };
+      window.history.replaceState({ ...window.history.state, reportReturn }, "");
+      window.history.pushState(null, "", "#sample-report");
+    }
+    reachReport();
   });
 }
 
 setupTabs.hidden = false;
 selectTab(tabs[0]);
-selectTabFromHash(false, true);
-window.addEventListener("hashchange", (event) => selectTabFromHash(new URL(event.oldURL).hash === "#sample-report"));
+selectTabFromHash(true);
+if (location.hash === "#sample-report") showEveningReport();
+window.addEventListener("pageshow", () => {
+  if (location.hash === "#sample-report") reachReport();
+});
+window.addEventListener("hashchange", (event) => {
+  if (location.hash === "#sample-report") reachReport();
+  else if (new URL(event.oldURL).hash !== "#sample-report" || !restoreReportOrigin()) selectTabFromHash();
+});
 
 const feedback = document.getElementById("copy-feedback");
 for (const button of document.querySelectorAll("[data-copy]")) {
