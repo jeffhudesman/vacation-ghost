@@ -10,6 +10,8 @@ Make home look lived in while you’re away. Set your trip dates and Vacation Gh
 
 [![Watch the Vacation Ghost demo. One window glows behind drawn curtains at dusk.](site/assets/house-at-dusk-1120.webp)](https://vacationghost.com/#sample-evening)
 
+[Watch the original concept GIF](https://raw.githubusercontent.com/jeffhudesman/vacation-ghost/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/images/vacation-ghost-demo.gif) (5.6 MiB)
+
 ## Try it without hardware
 
 On Linux, use Git, Python 3.11 or later, and the system time-zone database, usually provided by `tzdata`. The simulator uses Python’s standard library. The commands fetch Preview 2 and replay a fictional trip in a temporary directory.
