@@ -1,6 +1,6 @@
 # Vacation Ghost
 
-**Developer preview.** The simulator is ready to try. Physical Raspberry Pi testing is pending.
+**Developer preview.** The Preview 2 simulator ran successfully on a Raspberry Pi 5. Physical testing of the Shelly plugs and lamps, optional LED and audio outputs, and service recovery after reboot is pending. [Pi 5 test record](docs/hardware.md#raspberry-pi-5-simulator-test)
 
 Vacation Ghost makes an empty house look lived-in while you’re away. A Raspberry Pi runs a local routine for two lamps, with optional TV-like glow from an LED strip and quiet household sounds from a USB audio setup. Evening activity starts near sunset, moves between rooms one lamp at a time, and winds down at a bedtime that varies each night. The Pi writes morning notes and a trip summary locally.
 

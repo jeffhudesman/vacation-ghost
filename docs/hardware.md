@@ -27,7 +27,7 @@ Reserve both plugs for Vacation Ghost. Disable their auto-on timers, stock sched
 
 | Setup | Intended compatibility | Verification |
 | --- | --- | --- |
-| Simulator | Linux with Python 3.11 or later and the IANA time-zone database | Covered by the cloud workflow and automated tests. |
+| Simulator | Linux with Python 3.11 or later and the IANA time-zone database | Covered by automated tests and a [Preview 2 run on a Raspberry Pi 5](#raspberry-pi-5-simulator-test). |
 | Lights | Two Shelly Gen2 or Gen3 plugs using local `Shelly.GetDeviceInfo`, `Switch.GetStatus`, and `Switch.Set` | Complete the physical checklist on your models and firmware. |
 | TV glow | Raspberry Pi Zero 2 W or Pi 4 with `rpi_ws281x`, PWM channel 0 on BCM GPIO18, and a WS2812B-compatible GRB strip | Complete the physical checklist on your Pi and OS image. |
 | Sound | ALSA `aplay`, a system-visible default USB audio device, and a powered speaker | Verify playback under the installed systemd unit. |
@@ -52,9 +52,15 @@ Power the Pi from its own supply. Share ground between the Pi, buffer, strip, an
 
 Onboard PWM audio can conflict with the LED driver. If it does, set `dtparam=audio=off` in `/boot/firmware/config.txt` on Raspberry Pi OS and reboot. Use a USB audio adapter with a [system-visible ALSA default](service.md#optional-tv-glow-and-sound) and test playback under the installed unit.
 
+## Raspberry Pi 5 simulator test
+
+A Preview 2 test used Raspberry Pi Imager on a MacBook Pro to write and verify Raspberry Pi OS (64-bit) on a CanaKit 128 GB microSD card. The CanaKit Raspberry Pi 5 booted from the card and was accessed from the MacBook Pro over SSH without a display.
+
+The `v0.1.0-preview.2` simulator ran the example trip through the morning of June 11, 2030. The run produced the local JSON morning report for that date.
+
 ## Physical release checklist
 
-Physical tests are pending. Use this template to record an actual lights-only run on a Pi before relying on it for a trip. Keep local trip dates, addresses, device identifiers, and credentials out of shared reports. Share the release commit, models, firmware, and redacted observations.
+Physical testing of the Shelly plugs and lamps, optional LED and audio outputs, and service recovery after reboot is pending. Use this template to record a lights-only run on a Pi before relying on it for a trip. Keep local trip dates, addresses, device identifiers, and credentials out of shared reports. Share the release commit, models, firmware, and redacted observations.
 
 | Bench record | Current record |
 | --- | --- |

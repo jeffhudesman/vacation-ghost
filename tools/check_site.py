@@ -109,7 +109,9 @@ def check_source(page):
         elif url.startswith(f"{REPOSITORY}/blob/"):
             ref, path = parts.path.split("/blob/", 1)[1].split("/", 1)
             if ref == "main":
-                assert path in {"LICENSE", "CONTRIBUTING.md"}, url
+                assert path in {"LICENSE", "CONTRIBUTING.md"} or (
+                    path == "docs/hardware.md" and parts.fragment == "raspberry-pi-5-simulator-test"
+                ), url
                 content = (ROOT / path).read_text(encoding="utf-8")
             else:
                 assert ref == revision, url

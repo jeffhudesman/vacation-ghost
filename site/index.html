@@ -40,7 +40,7 @@
         <p class="eyebrow"><span class="signal" aria-hidden="true"></span> Open source for Raspberry Pi</p>
         <h1 id="hero-title">Make home look <em>lived in</em> while you’re away.</h1>
         <p class="intro">Vacation Ghost is an open-source Raspberry Pi project that alternates two lamps on compatible smart plugs and saves an activity report on the Pi.</p>
-        <p class="release-status"><strong>Pi developer preview.</strong> Physical testing pending.</p>
+        <p class="release-status"><strong>Pi developer preview.</strong> Simulator tested on Raspberry Pi 5.</p>
         <div class="hero-actions">
           <div class="hero-demo">
             <a class="button button-primary" href="#sample-evening" aria-describedby="demo-requirements">Watch the 21-second demo <span aria-hidden="true">↓</span></a>
@@ -227,7 +227,7 @@
           <section id="setup-panel-pi" class="setup-panel" aria-labelledby="setup-heading-pi">
             <div class="setup-description">
               <h3 id="setup-heading-pi">Your first Pi install.</h3>
-              <p>Use Raspberry Pi OS and a terminal with sudo access. Physical Pi testing is pending.</p>
+              <p>Use Raspberry Pi OS and a terminal with sudo access.</p>
               <div class="pi-start-links">
                 <a class="setup-link pi-quick-start" href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/service.md#lights-only-quick-start">Start the lights-only setup <span class="arrow-up" aria-hidden="true"></span></a>
                 <a class="setup-link" href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/hardware.md#physical-release-checklist">Open the power and network test checklist <span class="arrow-up" aria-hidden="true"></span></a>
@@ -291,7 +291,8 @@ Sound: disabled</code></pre>
         </details>
         <details>
           <summary>Is it ready for an unattended trip?</summary>
-          <p>Physical Pi testing is still pending. Complete the <a href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/hardware.md#physical-release-checklist">hardware checklist</a> on your own setup, including power and network outages, before relying on it while away.</p>
+          <p>The Preview 2 simulator ran on a Raspberry Pi 5 with 64-bit Raspberry Pi OS and saved the sample trip’s June 11, 2030 morning report as local JSON. <a href="https://github.com/jeffhudesman/vacation-ghost/blob/main/docs/hardware.md#raspberry-pi-5-simulator-test">See the simulator test results</a>.</p>
+          <p>Shelly plug and lamp control, optional LED and audio output, and automatic startup after a reboot still need physical testing. Complete the <a href="https://github.com/jeffhudesman/vacation-ghost/blob/34d794e52c58b3cfb02027f728ae842d26ae03af/docs/hardware.md#physical-release-checklist">hardware checklist</a> on your own setup, including power and network outages, before relying on it while away.</p>
         </details>
       </div>
     </section>

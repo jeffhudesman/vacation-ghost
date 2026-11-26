@@ -1,6 +1,6 @@
 # Run Vacation Ghost at boot
 
-The service runs on the Pi, resumes the configured trip after a reboot, and attempts and reports shutdown at the trip’s end. Physical validation is pending. Start with two switched lamps and use the [bench checklist](hardware.md#physical-release-checklist) before relying on the setup while away.
+The service runs on the Pi, resumes the configured trip after a reboot, and attempts and reports shutdown at the trip’s end. The Preview 2 simulator ran on a Raspberry Pi 5. Physical testing of the Shelly plugs and lamps, optional LED and audio outputs, and service recovery after reboot is pending. Start with two switched lamps and use the [bench checklist](hardware.md#physical-release-checklist) before relying on the setup while away.
 
 ## Lights-only quick start
 

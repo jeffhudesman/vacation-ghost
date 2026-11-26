@@ -44,7 +44,7 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
             --verify-tag --prerelease --title "Vacation Ghost $GITHUB_REF_NAME" --notes-file - <<EOF
-          Vacation Ghost is an open-source Raspberry Pi project that makes an empty house look lived in. The Linux simulator is ready to try. Physical Pi testing is pending.
+          Vacation Ghost is an open-source Raspberry Pi project that makes an empty house look lived in. The Linux simulator is ready to try. See the [hardware guide]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/main/docs/hardware.md) for current physical test results.
 
           Use this full commit ID when following the [lights-only Pi setup guide]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/docs/service.md#install-from-a-verified-release).
 
