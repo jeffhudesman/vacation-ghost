@@ -55,7 +55,7 @@
     <section id="how" class="routine-section">
       <div class="shell routine-grid">
         <div class="routine-card" id="sample-evening" role="region" aria-labelledby="sample-evening-title">
-          <div class="routine-card-header"><span id="sample-evening-title">From the sidewalk</span><span class="sample-label" id="demo-mode">Two lamps</span></div>
+          <div class="routine-card-header"><span id="sample-evening-title">From the sidewalk</span><span class="sample-label" id="demo-mode">Two lamps + extras</span></div>
           <div class="routine-frame">
             <div class="routine-scene" data-scene="kitchen" data-lamp="kitchen" data-glow="none" data-period="evening" data-cue="none" aria-hidden="true">
               <img class="scene-photo" src="assets/outside-view.webp" width="960" height="640" loading="lazy" alt="">
@@ -85,10 +85,10 @@
               <div class="routine-playback">
                 <button class="scene-play" id="scene-play" type="button">Play demo</button>
                 <button class="scene-restart" id="scene-restart" type="button">Restart</button>
-                <button class="scene-sound" id="scene-sound" type="button" aria-pressed="false" hidden>Sound <span id="scene-sound-state" aria-hidden="true">off</span></button>
+                <button class="scene-sound" id="scene-sound" type="button" aria-pressed="false">Sound <span id="scene-sound-state" aria-hidden="true">off</span></button>
               </div>
               <progress class="scene-progress" id="scene-progress" value="0" max="21" aria-label="Demo progress"></progress>
-              <label class="routine-extras"><input type="checkbox" id="scene-extras"> Include optional glow and sound</label>
+              <label class="routine-extras"><input type="checkbox" id="scene-extras" checked> Include optional glow and sound</label>
               <p id="scene-audio-status" class="audio-status" role="status"></p>
               <details class="routine-picker" open>
                 <summary>Jump to a scene</summary>

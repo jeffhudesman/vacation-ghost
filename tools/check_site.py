@@ -291,8 +291,8 @@ def assert_demo_ready(page):
 def check_scene_selection(page, width, height, schedule):
     page.locator('.hero a[href="#sample-evening"]').click()
     assert_demo_ready(page)
-    page.locator("#scene-extras").check()
-    page.locator(".hero-watch").click()
+    assert page.locator("#scene-extras").is_checked()
+    assert_sound_state(page, False)
     picker = page.locator(".routine-picker")
     assert picker.locator("summary").inner_text() == "Jump to a scene", width
     assert picker.evaluate("picker => picker.open") == (width > 480), width
@@ -387,8 +387,11 @@ def open_clocked_demo(page, url, *, extras=True):
     page.clock.install(time=start)
     page.clock.pause_at(start + timedelta(minutes=1))
     page.goto(url)
-    if extras:
-        page.locator("#scene-extras").evaluate("checkbox => checkbox.click()")
+    toggle = page.locator("#scene-extras")
+    assert toggle.is_checked()
+    if not extras:
+        toggle.evaluate("checkbox => checkbox.click()")
+        assert not toggle.is_checked()
     page.locator(".routine-card").evaluate("card => card.scrollIntoView({ block: 'start', behavior: 'instant' })")
 
 
@@ -539,6 +542,13 @@ def check_demo_playback(page, url):
     assert_sound_state(page, True)
     group.get_by_role("button", name="Kitchen break").dispatch_event("click")
     group.get_by_role("button", name="Morning kitchen").dispatch_event("click")
+    assert page.evaluate("window.demoAudioCalls.play") == [DEMO_AUDIO[0], *DEMO_AUDIO]
+    extras = page.locator("#scene-extras")
+    extras.evaluate("checkbox => checkbox.click()")
+    assert not extras.is_checked() and page.locator("#scene-sound").is_hidden()
+    extras.evaluate("checkbox => checkbox.click()")
+    assert extras.is_checked()
+    assert_sound_state(page, False)
     assert page.evaluate("window.demoAudioCalls.play") == [DEMO_AUDIO[0], *DEMO_AUDIO]
 
 
@@ -714,7 +724,8 @@ def check_demo_entry_points(page, url):
             page.goto(f"{url}?demo={width}-{motion}")
             page.locator('.hero a[href="#sample-evening"]').click()
             assert page.evaluate("location.hash") == "#sample-evening"
-            assert page.locator("#scene-sound").is_hidden()
+            assert page.locator("#scene-extras").is_checked()
+            assert_sound_state(page, False)
             focused = "#scene-next" if motion == "reduce" else "#scene-play"
             assert page.locator(focused).evaluate("button => document.activeElement === button")
             if motion == "reduce":
@@ -750,7 +761,7 @@ def check_demo_entry_points(page, url):
         if control == "#scene-next":
             next_scene.press("Enter")
             assert page.locator("#scene-name").inner_text() == "After dinner"
-    for _ in LIGHTS_ONLY_SCENES[1:]:
+    for _ in list(DEMO_SCENES)[1:]:
         next_scene.press("Enter")
     assert_sample_report(page, True)
     receipt = page.locator("#sample-report").bounding_box()
@@ -766,8 +777,22 @@ def check_phone_walkthrough(browser, url):
         watch = page.locator(".hero-watch")
         watch.click()
         assert_demo_ready(page)
-        assert page.locator("#scene-sound").is_hidden()
+        extras = page.locator("#scene-extras")
+        assert extras.is_checked()
+        assert_sound_state(page, False)
         next_scene = page.locator("#scene-next")
+        for name in ("Sunset", "After dinner", "TV time"):
+            next_scene.click()
+            assert page.locator("#scene-name").inner_text() == name
+        scene = page.locator(".routine-scene")
+        assert scene.get_attribute("data-glow") == "sports"
+        assert scene.get_attribute("data-cue") == "tv"
+        assert page.locator("#scene-audio").get_attribute("src") is None
+        extras.uncheck()
+        assert page.locator("#scene-name").inner_text() == "After dinner"
+        assert page.locator("#scene-sound").is_hidden()
+        watch.click()
+        assert not extras.is_checked()
         for name in LIGHTS_ONLY_SCENES:
             next_scene.click()
             assert page.locator("#scene-name").inner_text() == name
@@ -782,19 +807,20 @@ def check_phone_walkthrough(browser, url):
         assert next_scene.evaluate("el => el === document.activeElement")
         next_scene.click()
         assert page.locator("#scene-name").inner_text() == "Sunset"
-        page.locator("#scene-extras").check()
+        extras.check()
         assert page.locator("#scene-name").inner_text() == "Sunset"
         page.locator(".routine-picker summary").click()
         choices = page.get_by_role("group", name="Sample scenes")
         choices.get_by_role("button", name="TV time", exact=True).click()
         assert page.locator(".routine-scene").get_attribute("data-glow") == "sports"
-        page.locator("#scene-extras").uncheck()
+        extras.uncheck()
         assert page.locator("#scene-name").inner_text() == "After dinner"
         assert choices.get_by_role("button").all_text_contents() == list(LIGHTS_ONLY_SCENES)
         assert page.locator("#scene-sound").is_hidden()
         assert page.locator("#scene-audio").get_attribute("src") is None
         choices.get_by_role("button", name="Morning note", exact=True).click()
-        page.locator("#scene-extras").check()
+        extras.check()
+        assert_sound_state(page, False)
         assert_demo_ready(page)
         assert next_scene.is_enabled()
     with browser.new_context(java_script_enabled=False) as context:
@@ -803,7 +829,7 @@ def check_phone_walkthrough(browser, url):
         assert page.locator(".routine-transcript ol").is_visible()
 
 
-def check_default_playback(page, url):
+def check_lights_only_playback(page, url):
     open_clocked_demo(page, url, extras=False)
     page.locator("#scene-play").dispatch_event("click")
     beat = int(DEMO_DURATION * 1000 / (len(LIGHTS_ONLY_SCENES) - 1))
@@ -944,7 +970,7 @@ def check_browser(schedule, *, webkit=False):
                     page.on("pageerror", lambda error: errors.append(str(error)))
                     check_demo_playback(page, url)
                     assert not errors, errors
-                    check_default_playback(context.new_page(), url)
+                    check_lights_only_playback(context.new_page(), url)
                     check_audio_unavailable(context.new_page(), url)
                     check_demo_selected_start(context.new_page(), url)
                     check_demo_auto_pause(context.new_page(), url)
