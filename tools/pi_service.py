@@ -24,10 +24,20 @@ def execute(*args, capture=False):
     return result.stdout.strip() if capture else None
 
 
-def service_properties():
-    fields = ("User", "ActiveState", "NRestarts", "InvocationID")
-    result = execute("sudo", "systemctl", "show", UNIT, "--property=" + ",".join(fields), capture=True)
-    return dict(line.split("=", 1) for line in result.splitlines())
+def service_properties(*, allow_missing=False):
+    fields = ("LoadState", "User", "ActiveState", "NRestarts", "InvocationID")
+    result = subprocess.run(
+        ["sudo", "systemctl", "show", UNIT, "--all", "--property=" + ",".join(fields)],
+        text=True, stdout=subprocess.PIPE,
+    )
+    properties = dict(line.split("=", 1) for line in result.stdout.splitlines())
+    if allow_missing and result.returncode in (0, 4) and properties.get("LoadState") == "not-found":
+        if properties.get("ActiveState") == "inactive":
+            return properties
+    result.check_returncode()
+    if properties.get("LoadState") != "loaded":
+        raise ValueError("Unable to verify the installed systemd unit. Check its load state.")
+    return properties
 
 
 def account_command(user, *args, capture=False):
@@ -39,6 +49,9 @@ def inspect_as(user, command, *args):
 
 
 def commission(user):
+    previous = service_properties(allow_missing=True)
+    if previous["ActiveState"] not in ("inactive", "failed"):
+        raise ValueError("Stop and confirm shutdown of the existing service before commissioning.")
     unit_file = Path("/etc/systemd/system") / UNIT
     execute("sudo", "install", "-o", "root", "-g", "root", "-m", "0644", APP / "deploy" / UNIT, unit_file)
     execute("sudo", "systemd-analyze", "verify", unit_file)
