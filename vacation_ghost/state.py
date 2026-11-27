@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 DEVICE_DIR = Path("/var/lib/vacation-ghost/device")
 
 
+class StateConflict(RuntimeError):
+    """A reservation requires attention from its original operator."""
+
+
 class DeviceBusy(RuntimeError):
     pass
 
@@ -126,6 +130,14 @@ def remove_record(path: Path) -> None:
     sync_directory(path.parent)
 
 
+def validate_plug_identities(value: object) -> dict[str, str]:
+    if not isinstance(value, dict) or len(value) != 2 or any(
+        not isinstance(room, str) or not room or not isinstance(mac, str) or not re.fullmatch(r"[0-9a-f]{12}", mac)
+        for room, mac in value.items()
+    ) or len(set(value.values())) != 2:
+        raise InvalidState("expected two distinct Shelly plug identities")
+    return value.copy()
+
 class OutputReservation:
     """An outstanding shutdown must be recovered by its original state directory."""
 
@@ -172,21 +184,12 @@ class OutputReservation:
         if not isinstance(hardware, str) or not hardware or not isinstance(glow_pending, bool):
             raise InvalidState("pending shutdown record has missing or invalid hardware metadata")
         if owner != str(self.state_dir):
-            raise RuntimeError(f"shutdown is still pending for {owner}; recover it before using another state directory")
+            raise StateConflict(f"shutdown is still pending for {owner}; recover it before using another state directory")
         if hardware != self.hardware_id:
             raise ValueError("restore the original plug and LED configuration before retrying shutdown")
         if "plug_identities" in record:
-            self.plug_identities = self._validate_plug_identities(record["plug_identities"])
+            self.plug_identities = validate_plug_identities(record["plug_identities"])
         self.glow_pending = self.glow_pending or glow_pending
-
-    @staticmethod
-    def _validate_plug_identities(value: object) -> dict[str, str]:
-        if not isinstance(value, dict) or len(value) != 2 or any(
-            not isinstance(room, str) or not room or not isinstance(mac, str) or not re.fullmatch(r"[0-9a-f]{12}", mac)
-            for room, mac in value.items()
-        ) or len(set(value.values())) != 2:
-            raise InvalidState("pending shutdown record requires two distinct Shelly plug identities")
-        return value.copy()
 
     def _read_shutdown_confirmation(self) -> dict | None:
         try:
@@ -207,7 +210,7 @@ class OutputReservation:
 
     def engage(self) -> None:
         if self.plug_identities is None and self._identify_plugs is not None:
-            self.plug_identities = self._validate_plug_identities(self._identify_plugs())
+            self.plug_identities = validate_plug_identities(self._identify_plugs())
         self.clear_shutdown_confirmation()
         record = {
             "state_dir": str(self.state_dir),
@@ -228,6 +231,7 @@ class OutputReservation:
             remove_record(self.legacy)
         remove_record(self.path)
         self.glow_pending = False
+        self.plug_identities = None
 
     @property
     def shutdown_confirmed(self) -> bool:

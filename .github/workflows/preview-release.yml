@@ -7,7 +7,7 @@ on:
 permissions: {}
 
 jobs:
-  test:
+  verify-tag:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -30,10 +30,15 @@ jobs:
           with open("pyproject.toml", "rb") as metadata:
               assert tomllib.load(metadata)["project"]["version"] == sys.argv[1]
           PY
-      - run: python -m unittest discover -s tests -v
+
+  checks:
+    needs: verify-tag
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
 
   release:
-    needs: test
+    needs: checks
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -46,9 +51,9 @@ jobs:
             --verify-tag --prerelease --title "Vacation Ghost $GITHUB_REF_NAME" --notes-file - <<EOF
           Vacation Ghost is an open-source Raspberry Pi project that makes an empty house look lived in. The Linux simulator is ready to try. See the [hardware guide]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/main/docs/hardware.md) for current physical test results.
 
-          Use this full commit ID when following the [lights-only Pi setup guide]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/docs/service.md#install-from-a-verified-release).
+          [Browse this release's source]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/tree/$GITHUB_SHA). When installing this release using the [maintained lights-only Pi setup guide]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/main/docs/service.md#install-from-a-verified-release), use the tag \`$GITHUB_REF_NAME\` and this full commit ID.
 
           \`$GITHUB_SHA\`
 
-          Before relying on the Pi, complete the [physical checklist]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/docs/hardware.md#physical-release-checklist) with your exact setup.
+          Before relying on the Pi, complete the [current physical checklist]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/main/docs/hardware.md#physical-release-checklist) with your exact setup.
           EOF

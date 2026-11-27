@@ -40,25 +40,13 @@ Reserve both plugs for Vacation Ghost. Disable their auto-on timers, stock sched
 
 ### Estimate the longest planned lamp run
 
-Use the simulator from a current `main` checkout with Python 3.11 or later. Set `config_path` to a readable private copy of the configuration you intend to run, including the real trip dates and routine settings. The full simulation writes local reports to a new temporary directory. Preview 2’s historical simulator predates this estimate.
+Use `plan` from a current development checkout with Python 3.11 or later. Supply the private configuration you intend to run. The command prints local lamp transitions and the longest planned run for each room without contacting devices or saving trip data.
 
 ```sh
-(
-  set -eu
-  config_path="$HOME/vacation-private.toml"
-  plan_dir=$(mktemp -d "${TMPDIR:-/tmp}/vacation-ghost-plan.XXXXXX")
-  python3 -m vacation_ghost --config "$config_path" simulate --state-dir "$plan_dir"
-  python3 - "$plan_dir/trip.json" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-report = json.loads(Path(sys.argv[1]).read_text())
-seconds = report["longest_lamp_run_seconds"]
-print(f"Longest planned lamp run, rounded up: {(seconds + 59) // 60} minutes")
-PY
-)
+python3 -m vacation_ghost --config "$HOME/vacation-private.toml" plan
 ```
+
+For integrations, a complete development simulation also writes `longest_lamp_run_seconds` to `trip.json`. The tagged Preview 2 CLI predates both planning features.
 
 Give each plug’s timer margin above this schedule estimate. With the Pi disconnected, verify that each plug turns itself off after the configured delay and stays off when power returns. Recalculate if you change the trip or routine.
 
@@ -72,7 +60,7 @@ Give each plug’s timer margin above this schedule estimate. With the Pi discon
 | TV glow from `main` | Pi 5, Linux `spidev`, SPI0 MOSI on BCM GPIO10 (physical pin 19), up to 144 pixels | Automated tests cover frame encoding and blackout recovery. Physical glow and blackout tests are pending. [Bench rehearsal](service.md#try-pi-5-tv-glow-from-a-development-checkout) |
 | Sound | Pi Zero 2 W, Pi 4, or Pi 5, ALSA `aplay`, a system-visible default USB audio device, and a powered speaker | Verify playback under the installed systemd unit. |
 
-Confirm the model and firmware expose the required RPC calls without plug credentials on your restricted network. Configure each plug with a private IPv4 or unique-local IPv6 address. For HTTPS, the Pi must trust the certificate and the certificate must cover the configured IP address. Some Shelly models come with HTTPS enabled at the factory and use Shelly-issued certificates, so confirm the certificate requirements before buying. [Shelly firmware notes](https://www.home-assistant.io/integrations/shelly/#shelly-enhanced-security)
+Confirm the model and firmware expose the required RPC calls without plug credentials on your restricted network. On the development build, `doctor` also reads `Switch.GetConfig` for channel 0 to check `initial_state`, `auto_on`, `auto_off`, and `auto_off_delay`. Preview 2 requires checking these settings manually. Configure each plug with a private IPv4 or unique-local IPv6 address. For HTTPS, the Pi must trust the certificate and the certificate must cover the configured IP address. Some Shelly models come with HTTPS enabled at the factory and use Shelly-issued certificates, so confirm the certificate requirements before buying. [Shelly firmware notes](https://www.home-assistant.io/integrations/shelly/#shelly-enhanced-security)
 
 The **Shelly Plug US Gen4** (`S4PL-00116US`) is expected to work over Wi-Fi when its firmware and network settings meet those requirements. Verify auto-off and power-restore off independently of the Pi, then run `doctor` and `rehearse` with your exact model and firmware. [Shelly device profile](https://github.com/ALLTERCO/fleet-management/blob/6f1e3721b0958f5d6f75e71d43d317bba4fe1995/backend/src/devSimulation/profiles/gen4.ts#L198-L215) · [Physical checklist](#physical-release-checklist)
 
@@ -112,6 +100,8 @@ The `v0.1.0-preview.2` simulator ran the example trip through the morning of Jun
 ## Physical release checklist
 
 Physical testing is pending for the Shelly plugs and lamps, the optional LED and audio outputs, and automatic startup and trip recovery after a reboot. Use this template to record a lights-only run on a Pi before relying on it for a trip. Keep local trip dates, addresses, device identifiers, and credentials out of shared reports. Share the release commit, models, firmware, and redacted observations.
+
+Prepare a private record for the person watching the lamps. The report tool can also attach selected fields from a hardware-mode run. [On-site test record](bench.md)
 
 | Bench record | Current record |
 | --- | --- |

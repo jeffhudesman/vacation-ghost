@@ -2,7 +2,7 @@ import hashlib
 import io
 import json
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -12,7 +12,9 @@ from unittest.mock import Mock, call, patch
 from vacation_ghost import __main__ as cli
 from vacation_ghost import reports as report_module
 from vacation_ghost.config import Hardware, load_config
-from vacation_ghost.engine import SOUND_GRACE, Controller, Routine, rehearse, run
+from vacation_ghost.engine import (
+    SOUND_GRACE, Controller, PlugIdentityError, PlugPairingError, RehearsalIncomplete, Routine, rehearse, run,
+)
 from vacation_ghost.outputs import SimulationOutputs
 from vacation_ghost.reports import ReportStore
 from vacation_ghost.state import DeviceBusy, OutputReservation, lock_file
@@ -66,6 +68,66 @@ class RecoveryTests(unittest.TestCase):
         outputs.play_sound.assert_not_called()
         self.assertFalse(self.reservation.engaged)
         self.assertFalse(self.read("trip.json")["shutdown_unconfirmed"])
+
+    def test_identity_failures_report_the_failed_start_without_switching_outputs(self):
+        for failure, attempts in ((PlugIdentityError, 3), (PlugPairingError, 1)):
+            with self.subTest(failure=failure.__name__):
+                trip = self.root / failure.__name__
+                reports = ReportStore(trip, self.config.start, self.config.end)
+                identify = Mock(side_effect=failure("identity check failed for kitchen"))
+                reservation = OutputReservation(trip, self.device, hardware_id=TEST_HARDWARE_ID, identify_plugs=identify)
+                outputs = Mock(spec=SimulationOutputs)
+                with self.assertRaises(failure), self.assertLogs(level="WARNING"):
+                    run(self.config, Controller(self.config.rooms, outputs, reports), self.stop, reservation=reservation)
+                self.assertEqual(identify.call_count, attempts)
+                self.assertEqual(outputs.mock_calls, [])
+                latest = json.loads((trip / "latest.json").read_text())
+                self.assertEqual(latest["faults_by_device"], {"plug": attempts})
+                self.assertIn("could not start", latest["message"])
+                self.assertIn("kitchen", latest["startup_error"])
+                self.assertFalse(latest["shutdown_unconfirmed"])
+                self.assertFalse(reservation.engaged)
+
+    def test_identity_retry_clears_startup_error_after_both_plugs_are_identified(self):
+        outputs = SimulationOutputs()
+        identify = Mock(side_effect=[PlugIdentityError("kitchen lookup failed"),
+                                     dict(zip(self.config.rooms, ("000000000001", "000000000002")))])
+        reservation = OutputReservation(self.trip, self.device, hardware_id=TEST_HARDWARE_ID, identify_plugs=identify)
+
+        def wait(seconds):
+            if seconds == 1:
+                self.assertEqual(outputs.lamps, {})
+                self.assertIn("kitchen", self.read("latest.json")["startup_error"])
+            else:
+                self.assertIsNone(self.read("latest.json")["startup_error"])
+                self.now = self.config.end
+            return False
+
+        self.stop.wait.side_effect = wait
+        with self.assertLogs(level="WARNING"):
+            run(self.config, Controller(self.config.rooms, outputs, self.reports), self.stop, reservation=reservation)
+        self.assertEqual(identify.call_count, 2)
+        self.assertEqual(self.read("trip.json")["faults_by_device"], {"plug": 1})
+
+    def test_recovery_observes_trip_end_after_honoring_an_earlier_disarm(self):
+        for early in (False, True):
+            with self.subTest(early=early):
+                trip = self.root / str(early)
+                reports = ReportStore(trip, self.config.start, self.config.end)
+                reservation = OutputReservation(trip)
+                reservation.engage()
+                reservation.confirm_shutdown()
+                if early:
+                    cli._request_disarm(trip / ".disarm-request.json", reports.trip_id, self.config.start)
+                with patch.object(cli, "datetime") as clock:
+                    clock.now.return_value = self.config.end + timedelta(hours=1)
+                    cli._refresh_recovered_status(self.config, trip, reservation)
+                latest = json.loads((trip / "latest.json").read_text())
+                final = json.loads((trip / "trip.json").read_text())
+                self.assertEqual((latest["completed"], latest["disarmed"]), (not early, early))
+                self.assertEqual(final["ended_early"], early)
+                self.assertEqual((trip / ".completion.json").exists(), not early)
+                self.assertFalse(reservation.shutdown_confirmed)
 
     def test_switch_waits_for_previous_off_and_rechecks_deadline(self):
         outputs = Mock(spec=SimulationOutputs)
@@ -631,3 +693,57 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse(any(outputs.lamps.values()))
         self.assertEqual(outputs.glow, (0, 0, 0))
         self.assertFalse(self.reservation.engaged)
+        self.assertEqual(self.read("rehearsal.json")["outcome"], "failed")
+
+    def test_partial_rehearsal_names_only_the_outputs_exercised_and_confirms_shutdown(self):
+        def interrupt(_seconds):
+            self.stop.is_set.return_value = True
+            return True
+
+        self.stop.wait.side_effect = interrupt
+        outputs = SimulationOutputs()
+        with self.assertRaisesRegex(RehearsalIncomplete, "Lamps confirmed on: kitchen"):
+            rehearse(self.config, Controller(self.config.rooms, outputs, self.reports), self.stop, self.reservation)
+        record = self.read("rehearsal.json")
+        self.assertEqual(record["outcome"], "interrupted")
+        self.assertEqual(record["lamps_confirmed_on"], ["kitchen"])
+        self.assertEqual(record["sound_cues_started"], ["kettle"])
+        self.assertFalse(record["led_color_frame_sent"])
+        self.assertTrue(record["relay_off_verified"])
+        self.assertTrue(record["led_black_frame_sent"])
+        self.assertFalse(any(outputs.lamps.values()))
+        self.assertFalse(self.reservation.engaged)
+
+    def test_cli_returns_a_distinct_status_for_an_incomplete_rehearsal(self):
+        with (
+            patch.object(cli, "_hardware_command", side_effect=RehearsalIncomplete("Rehearsal interrupted.")),
+            redirect_stderr(io.StringIO()) as error,
+            self.assertRaises(SystemExit) as exit_status,
+        ):
+            cli.main(["--config", str(EXAMPLE), "rehearse", "--state-dir", str(self.trip)])
+        self.assertEqual(exit_status.exception.code, 3)
+        self.assertIn("Rehearsal interrupted", error.getvalue())
+
+    def test_complete_lights_only_rehearsal_records_only_lamp_checks(self):
+        outputs = SimulationOutputs()
+        config = self.live_config()
+        rehearse(config, Controller(config.rooms, outputs, self.reports), self.stop, self.reservation)
+        record = self.read("rehearsal.json")
+        self.assertEqual(record["outcome"], "completed")
+        self.assertEqual(record["lamps_confirmed_on"], list(config.rooms))
+        self.assertEqual(record["sound_cues_started"], [])
+        self.assertFalse(record["led_color_frame_sent"])
+        self.assertIsNone(record["led_black_frame_sent"])
+
+    def test_rehearsal_preserves_shutdown_error_when_result_storage_also_fails(self):
+        outputs = SimulationOutputs()
+        self.stop.is_set.return_value = True
+        with (
+            patch.object(outputs, "set_lamp", side_effect=OSError("relay offline")),
+            patch.object(self.reports, "write_rehearsal", side_effect=OSError("no storage")),
+            patch("vacation_ghost.engine.sleep"),
+            self.assertLogs(level="WARNING"),
+            self.assertRaisesRegex(RuntimeError, "shutdown unconfirmed"),
+        ):
+            rehearse(self.config, Controller(self.config.rooms, outputs, self.reports), self.stop, self.reservation)
+        self.assertTrue(self.reservation.engaged)

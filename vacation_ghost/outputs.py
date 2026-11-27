@@ -6,6 +6,7 @@ import io
 import ipaddress
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -300,6 +301,23 @@ class PiOutputs:
             raise RuntimeError(f"Shelly did not report a switch state for {room}")
         return output
 
+    def check_plug_safeguards(self, room: str) -> float:
+        """Inspect local switch settings without changing the relay or its configuration."""
+        settings = self._switch_call(room, "Switch.GetConfig?id=0")
+        issues = []
+        if settings.get("initial_state") != "off":
+            issues.append("set power-restore state to off")
+        if settings.get("auto_on") is not False:
+            issues.append("disable auto-on")
+        if settings.get("auto_off") is not True:
+            issues.append("enable auto-off")
+        delay = settings.get("auto_off_delay")
+        if type(delay) not in (float, int) or not 0 < delay < math.inf:
+            issues.append("set a positive auto-off delay in seconds")
+        if issues:
+            raise RuntimeError("plug safeguards unverified: " + ", ".join(issues))
+        return delay
+
     def plug_identity(self, room: str) -> str:
         """Read a stable identity independent of the address used to reach the plug."""
         result = self._switch_call(room, "Shelly.GetDeviceInfo")
@@ -399,9 +417,11 @@ class PiOutputs:
                 target.writeframes(attenuated.tobytes())
             audio.seek(0)
             self.stop_sound()
+            launcher = Path(__file__).with_name("_audio_player.py")
+            command = [sys.executable, "-IS", str(launcher), str(os.getpid()), aplay]
             if can_start is not None and not can_start():
                 return False
-            self._player = subprocess.Popen([aplay, "--quiet"], stdin=audio)
+            self._player = subprocess.Popen(command, stdin=audio)
         return True
 
     def poll_audio(self) -> None:

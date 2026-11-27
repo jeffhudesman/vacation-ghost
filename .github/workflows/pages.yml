@@ -1,6 +1,11 @@
 name: Deploy website
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
   workflow_dispatch:
 
 permissions: {}
@@ -25,6 +30,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+      - name: Record the published revision
+        run: printf '%s\n' "$GITHUB_SHA" > site/revision.txt
       - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
         with:
           path: site
@@ -41,3 +48,33 @@ jobs:
     steps:
       - id: pages
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+
+  verify:
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Verify the public revision, homepage, styles and script
+        run: |
+          printf '%s\n' "$GITHUB_SHA" > site/revision.txt
+          response=$(mktemp)
+          check_public_files() {
+            for file in revision.txt index.html styles.css site.js; do
+              url_path=$file
+              if [ "$file" = index.html ]; then url_path=''; fi
+              curl --fail --silent --show-error --location --compressed --max-time 12 \
+                "https://vacationghost.com/$url_path?revision=$GITHUB_SHA" -o "$response" || return 1
+              cmp "site/$file" "$response" || return 1
+            done
+          }
+          for attempt in {1..12}; do
+            if check_public_files; then exit 0; fi
+            if [ "$attempt" -lt 12 ]; then sleep 10; fi
+          done
+          echo "The public website did not serve the expected files for $GITHUB_SHA." >&2
+          exit 1

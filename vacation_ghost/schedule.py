@@ -3,10 +3,13 @@
 import calendar
 import math
 import random
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo
+
+from .config import Config
 
 
 @dataclass(frozen=True)
@@ -22,6 +25,7 @@ class DayPlan:
     sunset: datetime
     events: tuple[Event, ...]
     evening_note: str | None = None
+    note_window: tuple[datetime, datetime] | None = None
 
 
 def _local_instant(wall_time: datetime, tz: ZoneInfo) -> datetime:
@@ -65,11 +69,13 @@ def _local_sunset(day: date, tz: ZoneInfo, latitude: float, longitude: float) ->
     if not -1 <= hour_angle_cos <= 1:
         return None
     hour_angle = math.degrees(math.acos(hour_angle_cos))
-    minutes_utc = 720 - 4 * longitude - equation_of_time + 4 * hour_angle
-    instant = datetime.combine(day, time(), UTC) + timedelta(minutes=round(minutes_utc))
-    # Civil time zones across the date line can label the same solar cycle differently.
-    local_date = instant.astimezone(tz).date()
-    return (instant + (day - local_date)).astimezone(tz)
+    noon_minutes = 720 - 4 * longitude - equation_of_time
+    midnight = datetime.combine(day, time(), UTC)
+    noon = midnight + timedelta(minutes=noon_minutes)
+    # Name the solar cycle by its local noon. Its sunset may be after midnight.
+    solar_date = noon.astimezone(tz).date()
+    sunset = midnight + timedelta(minutes=round(noon_minutes + 4 * hour_angle))
+    return (sunset + (day - solar_date)).astimezone(tz)
 
 
 def build_day(
@@ -105,7 +111,7 @@ def build_day(
         if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
             raise ValueError("Latitude or longitude is out of range")
         sunset = _local_sunset(day, tz, latitude, longitude)
-    if sunset is None or sunset.date() != day:
+    if sunset is None:
         sunset = _local_instant(datetime.combine(day, sunset_fallback), tz).astimezone(tz)
 
     # Intra-day cue offsets are elapsed time. Applying them on the local
@@ -127,15 +133,72 @@ def build_day(
     night_start = max(sunset.astimezone(UTC) + timedelta(minutes=rng.randint(-14, 16)), first_evening)
     evening_length = night_end - night_start
     note = None
+    note_window = None
     if evening_length >= timedelta(minutes=75):
         events.extend(_evening_events(night_start, night_end, rooms, rng))
     elif evening_length >= timedelta(minutes=20):
         events.extend(_short_evening(night_start, night_end, rooms, rng))
+        note_window = (night_start, night_end)
         note = "Evening activity was shortened because sunset was close to bedtime."
     else:
+        note_window = (first_evening, night_end)
         note = "Evening activity was skipped because sunset was too close to bedtime."
     events.sort(key=lambda event: event.at)
-    return DayPlan(day, sunset, tuple(Event(event.at.astimezone(tz), event.kind, event.value) for event in events), note)
+    local_events = tuple(Event(event.at.astimezone(tz), event.kind, event.value) for event in events)
+    return DayPlan(day, sunset, local_events, note, note_window)
+
+
+def build_config_day(config: Config, day: date) -> DayPlan:
+    return build_day(
+        day, config.timezone, config.rooms, sunset_fallback=config.sunset, bedtime=config.bedtime,
+        latitude=config.latitude, longitude=config.longitude, seed=config.seed,
+    )
+
+
+@dataclass(frozen=True)
+class TripDay:
+    day: date
+    lamp_intervals: tuple[tuple[datetime, datetime, str], ...]
+    evening_note: str | None
+
+
+def planned_days(config: Config) -> Iterator[TripDay]:
+    """Clip each day's UTC lamp intervals and any evening adjustment to the trip."""
+    start, end = config.start.astimezone(UTC), config.end.astimezone(UTC)
+    day = config.start.date()
+    while day <= config.end.date():
+        plan = build_config_day(config, day)
+        intervals = []
+        room, on_at = "", start
+        for event in plan.events:
+            if event.kind != "lamp" or event.value == room:
+                continue
+            at = event.at.astimezone(UTC)
+            if at >= end:
+                break
+            if room and at > on_at:
+                intervals.append((on_at, at, room))
+            room, on_at = event.value, max(start, at)
+        if room and end > on_at:
+            intervals.append((on_at, end, room))
+        note = None
+        if plan.note_window is not None:
+            evening_start, evening_end = plan.note_window
+            if start < evening_end and evening_start < end:
+                note = plan.evening_note
+        yield TripDay(day, tuple(intervals), note)
+        if day == config.end.date():
+            break
+        day += timedelta(days=1)
+
+
+def longest_lamp_runs(config: Config) -> dict[str, int]:
+    """Longest single planned run per room, rounded up to whole seconds."""
+    longest = dict.fromkeys(config.rooms, 0)
+    for day in planned_days(config):
+        for start, end, room in day.lamp_intervals:
+            longest[room] = max(longest[room], math.ceil((end - start).total_seconds()))
+    return longest
 
 
 def _morning_events(start: datetime, kitchen: str, rng: random.Random) -> list[Event]:

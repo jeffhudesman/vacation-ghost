@@ -13,6 +13,7 @@ from .spi_glow import SPI_LED_LIMIT, SPI_LED_PIN
 LED_PIN = 18
 LED_CHANNELS = {10: 0, 12: 0, 13: 1, 18: 0, 19: 1, 21: 0}
 DEFAULT_LED_BACKEND = "rpi_ws281x"
+SUNSET_ORDER_ERROR = "routine.sunset must be before routine.bedtime; choose an earlier fallback sunset or later bedtime"
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ class Config:
     longitude: float | None
     seed: str
     hardware: Hardware | None
+    unknown_settings: tuple[str, ...] = ()
 
 
 def parse_timestamp(value: str | datetime) -> datetime:
@@ -107,7 +109,7 @@ def _hardware(table: dict, rooms: tuple[str, str], directory: Path) -> Hardware:
     )
 
 
-def _validate_settings(document: dict) -> None:
+def _unknown_settings(document: dict) -> tuple[str, ...]:
     sections = {
         "trip": {"start", "end", "timezone"},
         "routine": {"rooms", "sunset", "bedtime", "latitude", "longitude", "seed"},
@@ -121,16 +123,16 @@ def _validate_settings(document: dict) -> None:
         if not isinstance(table, dict):
             raise ValueError(f"[{section}] must be a table")
         unknown.update(f"{section}.{name}" for name in table.keys() - allowed)
-    if unknown:
-        raise ValueError("Unrecognized configuration settings " + ", ".join(sorted(unknown)))
+    return tuple(sorted(unknown))
 
 
 def load_config(path: Path, *, validate_sunset: bool = True, validate_settings: bool = False) -> Config:
     try:
         with path.open("rb") as stream:
             document = tomllib.load(stream)
-        if validate_settings:
-            _validate_settings(document)
+        unknown_settings = _unknown_settings(document)
+        if validate_settings and unknown_settings:
+            raise ValueError("Unrecognized configuration settings " + ", ".join(unknown_settings))
         trip = document["trip"]
         routine = document["routine"]
         timezone = ZoneInfo(trip["timezone"])
@@ -160,7 +162,7 @@ def load_config(path: Path, *, validate_sunset: bool = True, validate_settings: 
         sunset = _clock(routine["sunset"], time(15), time(22))
         bedtime = _clock(routine["bedtime"], time(18), time(23, 55))
         if validate_sunset and sunset >= bedtime:
-            raise ValueError("routine.sunset must be before routine.bedtime; choose an earlier fallback sunset or later bedtime")
+            raise ValueError(SUNSET_ORDER_ERROR)
         return Config(
             start=start,
             end=end,
@@ -171,6 +173,7 @@ def load_config(path: Path, *, validate_sunset: bool = True, validate_settings: 
             latitude=latitude,
             longitude=longitude,
             seed=seed,
+            unknown_settings=unknown_settings,
             hardware=_hardware(document["hardware"], rooms, path.parent) if "hardware" in document else None,
         )
     except (AttributeError, KeyError, OSError, TypeError, ValueError, ZoneInfoNotFoundError) as exc:

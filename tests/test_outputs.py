@@ -1,6 +1,8 @@
 import io
 import json
 import os
+import select
+import signal
 import struct
 import subprocess
 import sys
@@ -19,6 +21,7 @@ from vacation_ghost.outputs import MAX_SOUND_BYTES, PiOutputs, SOUND_CUES, SOUND
 
 
 LIGHTS_ONLY = Path(__file__).resolve().parents[1] / "examples" / "vacation.lights-only.toml"
+SAFE_SWITCH_SETTINGS = b'{"id":0,"initial_state":"off","auto_on":false,"auto_off":true,"auto_off_delay":7200}'
 
 
 class PiOutputsTest(unittest.TestCase):
@@ -355,8 +358,8 @@ living = "192.168.1.21"
         device = Mock()
         factory = Mock(return_value=device)
         responses = [
-            b'{"mac":"AABBCCDDEE01"}', b'{"output":false}',
-            b'{"mac":"AABBCCDDEE02"}', b'{"output":true}',
+            b'{"mac":"AABBCCDDEE01"}', b'{"output":false}', SAFE_SWITCH_SETTINGS,
+            b'{"mac":"AABBCCDDEE02"}', b'{"output":true}', SAFE_SWITCH_SETTINGS,
         ]
         output = io.StringIO()
         with (
@@ -463,6 +466,7 @@ living = "192.168.1.21"
             ):
                 command = ["--config", str(config_path)]
                 state_args = ["--state-dir", str(state_dir)]
+                self.assertEqual(cli.main([*command, "pair"]), 0)
                 with self.assertRaises(SystemExit) as exit_code:
                     cli.main([*command, "rehearse", *state_args])
                 self.assertEqual(exit_code.exception.code, 1)
@@ -486,7 +490,9 @@ living = "192.168.1.21"
         player.poll.return_value = 0
 
         def play(command, stdin):
-            self.assertEqual(command, ["/usr/bin/aplay", "--quiet"])
+            self.assertEqual(command[:2], [sys.executable, "-IS"])
+            self.assertEqual(Path(command[2]).name, "_audio_player.py")
+            self.assertEqual(command[3:], [str(os.getpid()), "/usr/bin/aplay"])
             with wave.open(stdin, "rb") as wav:
                 self.assertEqual(struct.unpack("<hh", wav.readframes(2)), (6553, -6553))
             return player
@@ -505,6 +511,44 @@ living = "192.168.1.21"
                 outputs.poll_audio()
         start_player.assert_called_once()
         player.wait.assert_not_called()
+
+    @unittest.skipUnless(sys.platform == "linux", "Pi audio uses Linux parent-death signalling")
+    def test_player_dies_when_foreground_controller_is_killed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with wave.open(str(root / "tv.wav"), "wb") as cue:
+                cue.setparams((1, 2, 8000, 0, "NONE", "not compressed"))
+                cue.writeframes(b"\x00\x00")
+            fake = root / "aplay"
+            fake.write_text('#!/bin/sh\nprintf "%s\\n" "$$"\nexec sleep 30\n')
+            fake.chmod(0o700)
+            controller = subprocess.Popen([
+                sys.executable, "-c",
+                "from pathlib import Path\n"
+                "from threading import Event\n"
+                "from vacation_ghost.outputs import PiOutputs\n"
+                "import sys\n"
+                "PiOutputs({}, sounds_dir=Path(sys.argv[1]), volume=0.08).play_sound('tv')\n"
+                "Event().wait(30)\n",
+                directory,
+            ], env={**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"]},
+                stdout=subprocess.PIPE, text=True)
+            try:
+                self.assertTrue(select.select([controller.stdout], [], [], 5)[0], "player did not start")
+                player_pid = int(controller.stdout.readline())
+                player_fd = os.pidfd_open(player_pid)
+                try:
+                    controller.kill()
+                    controller.wait(timeout=5)
+                    self.assertTrue(select.select([player_fd], [], [], 5)[0], "orphaned player is still running")
+                finally:
+                    if not select.select([player_fd], [], [], 0)[0]:
+                        signal.pidfd_send_signal(player_fd, signal.SIGKILL)
+                    os.close(player_fd)
+            finally:
+                controller.kill()
+                controller.wait(timeout=5)
+                controller.stdout.close()
 
     def test_sound_guard_runs_after_preparing_audio(self):
         outputs = PiOutputs(self.plugs, sounds_dir=Path("/unused"), volume=0.08)
@@ -575,27 +619,46 @@ living = "192.168.1.21"
 class CliDiagnosticsTest(unittest.TestCase):
     def test_doctor_confirms_distinct_devices_without_logging_identities(self):
         responses = [
-            b'{"mac":"AABBCCDDEE01"}', b'{"output":false}',
-            b'{"mac":"AABBCCDDEE02"}', b'{"output":true}',
+            b'{"mac":"AABBCCDDEE01"}', b'{"output":false}', SAFE_SWITCH_SETTINGS,
+            b'{"mac":"AABBCCDDEE02"}', b'{"output":true}', SAFE_SWITCH_SETTINGS,
         ]
         output = io.StringIO()
         with patch("vacation_ghost.outputs._rpc_request", side_effect=responses) as rpc, redirect_stdout(output):
             exit_code = cli.main(["--config", str(LIGHTS_ONLY), "doctor"])
         self.assertEqual(exit_code, 0)
-        self.assertEqual(output.getvalue().splitlines(), [
-            "Plug kitchen: off", "Plug living: on", "TV glow: disabled", "Sound: disabled",
-        ])
+        lines = output.getvalue().splitlines()
+        for line, plug in zip(lines, ("kitchen: off", "living: on")):
+            self.assertRegex(line, rf"Plug {plug}, power restore off, auto-on disabled, auto-off 7200s .*run \d+s\)")
+        self.assertEqual(lines[2:], ["TV glow: disabled", "Sound: disabled"])
+        self.assertNotIn("AABBCC", output.getvalue().upper())
         self.assertEqual([entry.args[1:] for entry in rpc.call_args_list], [
-            ("Shelly.GetDeviceInfo", None), ("Switch.GetStatus?id=0", None),
-            ("Shelly.GetDeviceInfo", None), ("Switch.GetStatus?id=0", None),
-        ])
+            ("Shelly.GetDeviceInfo", None), ("Switch.GetStatus?id=0", None), ("Switch.GetConfig?id=0", None),
+        ] * 2)
+
+    def test_doctor_flags_unsafe_missing_and_short_timers_without_writing(self):
+        bad_settings = [
+            (b'{}', "plug safeguards unverified"),
+            (b'{"initial_state":"on","auto_on":true,"auto_off":false,"auto_off_delay":true}', "enable auto-off"),
+            (SAFE_SWITCH_SETTINGS.replace(b'7200', b'1'), "longest planned kitchen lamp run"),
+        ]
+        for bad, message in bad_settings:
+            kitchen = [b'{"mac":"AABBCCDDEE01"}', b'{"output":false}', bad]
+            living = [b'{"mac":"AABBCCDDEE02"}', b'{"output":false}', SAFE_SWITCH_SETTINGS]
+            output = io.StringIO()
+            with self.subTest(bad=bad), redirect_stdout(output), patch(
+                "vacation_ghost.outputs._rpc_request", side_effect=kitchen + living,
+            ) as rpc:
+                self.assertEqual(cli.main(["--config", str(LIGHTS_ONLY), "doctor"]), 1)
+                self.assertIn(message, output.getvalue())
+                self.assertIn("Plug living: off", output.getvalue())
+                self.assertTrue(all(request.args[2] is None for request in rpc.call_args_list))
 
     def test_doctor_rejects_two_origins_for_one_device(self):
         config = load_config(LIGHTS_ONLY)
         config = replace(config, hardware=replace(config.hardware, plugs={
             "kitchen": "http://192.168.1.60", "living": "https://192.168.1.60",
         }))
-        responses = [b'{"mac":"AABBCCDDEE01"}', b'{"output":false}', b'{"mac":"aabbccddee01"}']
+        responses = [b'{"mac":"AABBCCDDEE01"}', b'{"output":false}', SAFE_SWITCH_SETTINGS, b'{"mac":"aabbccddee01"}']
         output = io.StringIO()
         with (
             patch.object(cli, "load_config", return_value=config),

@@ -20,7 +20,7 @@ On Linux, use Git, Python 3.11 or later, and the system time-zone database, usua
 (
   set -eu
   demo_dir=$(mktemp -d "${TMPDIR:-/tmp}/vacation-ghost-demo.XXXXXX")
-  git clone https://github.com/jeffhudesman/vacation-ghost.git \
+  git clone --depth 1 --branch v0.1.0-preview.2 https://github.com/jeffhudesman/vacation-ghost.git \
     "$demo_dir/vacation-ghost"
   cd "$demo_dir/vacation-ghost"
   git checkout --quiet --detach 34d794e52c58b3cfb02027f728ae842d26ae03af
@@ -83,6 +83,17 @@ Vacation Ghost uses no camera or microphone and collects no audio.
 Export only the needed reports and keep the controller’s state directory private. [Read-only export](docs/service.md#share-reports-locally)
 
 </details>
+
+## Try the development build
+
+From a current Git checkout, preview a trip on Linux before connecting any hardware. The plan shows the resolved local departure and return, lamp changes, and the longest continuous run for each room.
+
+```sh
+python3 -m vacation_ghost --version
+python3 -m vacation_ghost --config examples/vacation.lights-only.toml plan
+```
+
+On the Pi, the development build uses `pair` to remember the two plugs, and `doctor` reads their power-restore and timer settings. A rehearsal records which outputs it exercised. Use the on-site bench record to add what you saw. [Install the development build for two lamps](docs/device-profiles.md#lights-only-installation) · [Development recovery](docs/service.md#development-checkout-diagnostics-and-recovery) · [Physical bench record](docs/bench.md)
 
 ## Contribute
 

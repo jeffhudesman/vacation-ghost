@@ -50,6 +50,8 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(daily["device_faults"], 2)
         self.assertTrue(daily["shutdown_unconfirmed"])
         self.assertIn("shutdown could not be confirmed", daily["message"])
+        self.assertIn("earlier fault", daily["message"])
+        self.assertIn("latest.json", daily["message"])
 
         reports.publish_due(self.end)
         final = self.read("trip.json")
@@ -186,6 +188,28 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(len(archives), 1)
         self.assertEqual(archives[0].read_bytes(), original)
         self.assertEqual(self.read("trip.json")["id"], f"{reports.trip_id}:trip")
+
+    def test_new_final_report_fields_are_validated_only_when_present(self):
+        reports = self.store()
+        reports.complete(self.end)
+        reports.publish_due(self.end)
+        path = self.state / "trip.json"
+        original = self.read("trip.json")
+        old = original.copy()
+        old.pop("relay_off_verified")
+        old.pop("led_black_frame_sent")
+        path.write_text(json.dumps(old))
+        self.store().publish_due(self.end)
+        self.assertEqual(self.read("trip.json"), old)
+        for field, invalid in (("relay_off_verified", 17), ("led_black_frame_sent", "yes"),
+                               ("longest_lamp_run_seconds", "30"), ("longest_lamp_run_seconds", True)):
+            with self.subTest(field=field, invalid=invalid):
+                broken = {**original, field: invalid}
+                path.write_text(json.dumps(broken))
+                with self.assertLogs("vacation_ghost.reports", "WARNING"):
+                    self.store().publish_due(self.end)
+                self.assertEqual(self.read("trip.json"), original)
+                self.assertIn(broken, [json.loads(p.read_text()) for p in self.state.glob("trip.json.corrupt-*")])
 
     def test_report_path_access_error_is_not_treated_as_corruption(self):
         reports = self.store()

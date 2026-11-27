@@ -1,6 +1,7 @@
 include CONTRIBUTING.md
-recursive-include deploy *.service *.conf *.txt
-recursive-include docs *.md
+include deploy/vacation-ghost.service deploy/lights-only.conf deploy/rpi-ws281x-source.txt
+include deploy/10-device-user.conf deploy/20-usb-audio.conf deploy/20-spi-glow.conf
+include docs/hardware.md docs/service.md docs/bench.md docs/device-profiles.md
 include docs/images/vacation-ghost-evening.gif
 include examples/vacation.example.toml examples/vacation.lights-only.toml
-include tools/generate_sounds.py
+include tools/generate_sounds.py tools/pi_service.py tools/bench_record.py

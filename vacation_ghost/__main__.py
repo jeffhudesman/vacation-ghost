@@ -4,16 +4,18 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import signal
 from datetime import datetime
 from pathlib import Path
 from threading import Event
 
 from . import state
-from .config import DEFAULT_LED_BACKEND, Config, load_config, parse_timestamp
-from .engine import Controller, recover_outputs, rehearse, run, simulate
+from .config import DEFAULT_LED_BACKEND, SUNSET_ORDER_ERROR, Config, load_config, parse_timestamp
+from .engine import Controller, PlugIdentityError, PlugPairingError, RehearsalIncomplete, recover_outputs, rehearse, run, simulate
 from .outputs import PiOutputs, SimulationOutputs
 from .reports import ReportStore, read_trip_id, trip_identity
+from .schedule import longest_lamp_runs, planned_days
 
 
 def _outputs(config: Config) -> PiOutputs:
@@ -27,10 +29,13 @@ def _outputs(config: Config) -> PiOutputs:
 
 
 def _check_plug_identity(outputs: PiOutputs, room: str, checked_plugs: dict[str, str]) -> str:
-    identity = outputs.plug_identity(room)
+    try:
+        identity = outputs.plug_identity(room)
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise PlugIdentityError(f"could not identify {room}: {exc}") from exc
     other = checked_plugs.get(identity)
     if other is not None:
-        raise RuntimeError(f"same Shelly device as {other}. Configure two distinct plugs.")
+        raise PlugPairingError(f"same Shelly device as {other}. Configure two distinct plugs.")
     checked_plugs[identity] = room
     return identity
 
@@ -39,10 +44,22 @@ def _doctor(config: Config) -> int:
     outputs = _outputs(config)
     hardware = config.hardware
     checked_plugs: dict[str, str] = {}
+    longest_runs = longest_lamp_runs(config)
 
     def check_plug(room: str) -> str:
         _check_plug_identity(outputs, room, checked_plugs)
-        return "on" if outputs.lamp_status(room) else "off"
+        status = "on" if outputs.lamp_status(room) else "off"
+        delay = outputs.check_plug_safeguards(room)
+        seconds = f"{delay:g}" if isinstance(delay, float) else str(delay)
+        longest = longest_runs[room]
+        if delay <= longest:
+            raise RuntimeError(
+                f"auto-off is {seconds}s; set it above the longest planned {room} lamp run ({longest}s)"
+            )
+        return (
+            f"{status}, power restore off, auto-on disabled, auto-off {seconds}s "
+            f"(longest planned run {longest}s)"
+        )
 
     def check_glow() -> str:
         if not outputs.check_glow():
@@ -120,6 +137,8 @@ def _refresh_recovered_status(config: Config, state_dir: Path, reservation: stat
         now = datetime.now(config.timezone)
         if not dry_run and (request := _disarm_time(state_dir / ".disarm-request.json", trip_id)) is not None:
             reports.disarm(request)
+        if not dry_run:
+            reports.complete(now)
         reports.confirm_shutdown(relay_off_verified=True, led_black_frame_sent=reservation.led_black_frame_sent)
         reports.status(now, False, None, force=True)
         if not dry_run:
@@ -144,6 +163,51 @@ def _shutdown_message(led_black_frame_sent: bool | None) -> str:
     return message
 
 
+def _plug_map(outputs: PiOutputs, config: Config) -> dict[str, str]:
+    checked: dict[str, str] = {}
+    return {room: _check_plug_identity(outputs, room, checked) for room in config.rooms}
+
+
+def _paired_plugs() -> dict[str, str] | None:
+    record = state.read_record(state.DEVICE_DIR / "paired-plugs.json")
+    return None if record is None else state.validate_plug_identities(record)
+
+
+def _pair(config: Config, *, replace: bool) -> None:
+    state.hardware_directory(state.DEVICE_DIR)
+    with state.lock_file(state.DEVICE_DIR / "hardware.lock"):
+        if state.read_record(state.DEVICE_DIR / "outputs.json") is not None:
+            raise state.StateConflict("Recover the pending shutdown with its original config before pairing plugs.")
+        outputs = _outputs(config)
+        try:
+            observed = state.validate_plug_identities(_plug_map(outputs, config))
+            current = _paired_plugs()
+            if current is not None and current != observed and not replace:
+                raise PlugPairingError("Plug pairing changed. Verify both devices in person and use pair --replace.")
+            if observed != current:
+                state.write_record(state.DEVICE_DIR / "paired-plugs.json", observed)
+        finally:
+            outputs.close()
+    print("Paired plugs for " + ", ".join(observed) + ". Rehearse while home to verify each lamp.")
+
+
+def _print_plan(config: Config) -> None:
+    print(f"Planned lamp activity in {config.timezone}")
+    print(f"Departure {config.start.isoformat()}   Return {config.end.isoformat()}")
+    longest = dict.fromkeys(config.rooms, 0)
+    for day in planned_days(config):
+        if day.evening_note is not None:
+            print(f"{day.day.isoformat()}  {day.evening_note}")
+        for start, end, room in day.lamp_intervals:
+            seconds = math.ceil((end - start).total_seconds())
+            longest[room] = max(longest[room], seconds)
+            local_start = start.astimezone(config.timezone).isoformat(timespec="seconds")
+            local_end = end.astimezone(config.timezone).isoformat(timespec="seconds")
+            print(f"{local_start}  {room} on until {local_end}")
+    for room, seconds in longest.items():
+        print(f"Longest planned {room} run: {seconds} seconds ({(seconds + 59) // 60} minutes rounded up).")
+
+
 def _hardware_command(command: str, config: Config, state_dir: Path) -> None:
     outputs = _outputs(config)
     state.hardware_directory(state_dir)
@@ -153,8 +217,12 @@ def _hardware_command(command: str, config: Config, state_dir: Path) -> None:
     identity = trip_identity(config.start, config.end)
 
     def identify_plugs() -> dict[str, str]:
-        checked_plugs: dict[str, str] = {}
-        identities = {room: _check_plug_identity(outputs, room, checked_plugs) for room in config.rooms}
+        paired = _paired_plugs()
+        if paired is None:
+            raise PlugPairingError("No paired plugs. Run pair while home before starting the routine.")
+        identities = _plug_map(outputs, config)
+        if identities != paired:
+            raise PlugPairingError("Shelly plug pairing changed. Check the reserved addresses and original devices.")
         outputs.bind_plug_identities(identities)
         return identities
 
@@ -200,16 +268,31 @@ def _hardware_command(command: str, config: Config, state_dir: Path) -> None:
                     _recover_pending_outputs(config, outputs, reservation)
                 except (OSError, ValueError, RuntimeError) as shutdown_error:
                     raise RuntimeError(f"Could not open reports: {report_error}. {shutdown_error}") from shutdown_error
-                raise RuntimeError(f"Shutdown confirmed. Could not open reports: {report_error}") from report_error
-            if reservation.engaged and reservation.plug_identities is None:
+                error_type = state.StateConflict if isinstance(report_error, ValueError) else RuntimeError
+                raise error_type(f"Shutdown confirmed. Could not open reports: {report_error}") from report_error
+            if reservation.engaged:
                 _recover_pending_outputs(config, outputs, reservation)
                 _refresh_recovered_status(config, state_dir, reservation)
                 reports = ReportStore(state_dir, config.start, config.end, dry_run=is_rehearsal)
+            if command in {"run", "rehearse"}:
+                if config.unknown_settings:
+                    raise ValueError("Unrecognized configuration settings " + ", ".join(config.unknown_settings))
+                if config.sunset >= config.bedtime:
+                    raise ValueError(SUNSET_ORDER_ERROR)
+                if (command == "run" and reports.disarmed_at is None and reports.completed_at is None
+                        and datetime.now(config.timezone).timestamp() < config.start.timestamp()):
+                    # Commissioning watches for a waiting runner. A missing pairing should fail now.
+                    paired = _paired_plugs()
+                    if paired is None or set(paired) != set(config.rooms):
+                        raise PlugPairingError("No matching paired rooms. Run pair while home before starting the routine.")
             controller = Controller(config.rooms, outputs, reports)
             stop = _stop_event()
             if is_rehearsal:
-                rehearse(config, controller, stop, reservation)
-                print(f"Rehearsal ended. {_shutdown_message(reports.led_black_frame_sent)}")
+                try:
+                    exercised = rehearse(config, controller, stop, reservation)
+                except RehearsalIncomplete as exc:
+                    raise RehearsalIncomplete(f"{exc} {_shutdown_message(reports.led_black_frame_sent)}") from exc
+                print(f"Rehearsal completed. {exercised} {_shutdown_message(reports.led_black_frame_sent)}")
             else:
                 run(config, controller, stop, reservation=reservation,
                     disarm_requested=lambda: _disarm_time(disarm_path, identity))
@@ -235,10 +318,16 @@ def _at_timestamp(value: str) -> datetime:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from .version import VersionAction
+
     parser = argparse.ArgumentParser(description="Run a private, local occupancy routine.")
+    parser.add_argument("--version", action=VersionAction, nargs=0, help="show the build version and available commit")
     parser.add_argument("--config", required=True, type=Path)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("doctor", help="check configuration and hardware without changing outputs")
+    commands.add_parser("plan", help="print local lamp times and longest runs without connecting to devices")
+    pair = commands.add_parser("pair", help="save the two plug identities without switching them")
+    pair.add_argument("--replace", action="store_true", help="accept a deliberate change to the paired devices")
     for name, help_text in (
         ("run", "control the devices on a Raspberry Pi"),
         ("rehearse", "exercise each enabled output and confirm shutdown"),
@@ -255,11 +344,17 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     try:
         config = load_config(
-            args.config, validate_sunset=args.command not in {"recover", "disarm"},
-            validate_settings=args.command == "doctor",
+            args.config, validate_sunset=args.command in {"doctor", "pair", "plan", "simulate"},
+            validate_settings=args.command in {"doctor", "pair", "plan", "simulate"},
         )
         if args.command == "doctor":
             return _doctor(config)
+        if args.command == "plan":
+            _print_plan(config)
+            return 0
+        if args.command == "pair":
+            _pair(config, replace=args.replace)
+            return 0
         if args.command == "simulate":
             state.private_directory(args.state_dir)
             lock_path = args.state_dir / ".lock"
@@ -271,7 +366,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Simulated reports written to {args.state_dir}")
         else:
             _hardware_command(args.command, config, args.state_dir)
-    except (OSError, ValueError, RuntimeError) as exc:
+    except (ValueError, PlugPairingError, state.StateConflict, PermissionError) as exc:
+        parser.exit(78 if args.command == "run" else 1, f"Vacation Ghost: {exc}\n")
+    except RehearsalIncomplete as exc:
+        parser.exit(3, f"Vacation Ghost: {exc}\n")
+    except (OSError, RuntimeError) as exc:
         parser.exit(1, f"Vacation Ghost: {exc}\n")
     return 0
 

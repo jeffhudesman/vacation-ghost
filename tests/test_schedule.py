@@ -1,8 +1,11 @@
 import unittest
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
+from dataclasses import replace
 
-from vacation_ghost.schedule import build_day
+from vacation_ghost.config import load_config
+from vacation_ghost.schedule import build_day, longest_lamp_runs, planned_days
 
 
 class DayPlanTests(unittest.TestCase):
@@ -29,6 +32,30 @@ class DayPlanTests(unittest.TestCase):
         self.assertLessEqual(abs(plan.sunset - expected), timedelta(minutes=5))
         first_evening = next(event for event in plan.events if event.at.hour >= 15)
         self.assertLessEqual(abs(first_evening.at - plan.sunset), timedelta(minutes=16))
+
+    def test_after_midnight_sunset_belongs_to_evening_after_its_solar_noon(self):
+        day = date(2030, 6, 21)
+        plan = build_day(day, ZoneInfo("Atlantic/Reykjavik"), self.rooms, sunset_fallback=time(19),
+                         bedtime=time(23), latitude=64.1466, longitude=-21.9426)
+        self.assertEqual(plan.sunset.date(), day + timedelta(days=1))
+        self.assertEqual(plan.sunset.hour, 0)
+        self.assertIn("skipped", plan.evening_note)
+        self.assertTrue(all(event.at.hour < 9 for event in plan.events))
+        for zone, longitude in [("Pacific/Kiritimati", -157.4), ("Pacific/Pago_Pago", -170.7)]:
+            with self.subTest(zone=zone):
+                sunset = build_day(day, ZoneInfo(zone), self.rooms, sunset_fallback=time(19), bedtime=time(23),
+                                   latitude=2.0, longitude=longitude).sunset
+                self.assertEqual(sunset.date(), day)
+                self.assertIn(sunset.hour, (17, 18, 19))
+
+    def test_planned_longest_runs_and_trip_boundaries(self):
+        config = load_config(Path(__file__).resolve().parents[1] / "examples/vacation.example.toml")
+        self.assertEqual(max(longest_lamp_runs(config).values()), 5792)
+        start, end, room = next(planned_days(config)).lamp_intervals[0]
+        middle = replace(config, start=start + timedelta(seconds=5), end=end - timedelta(seconds=1))
+        self.assertEqual(next(planned_days(middle)).lamp_intervals, ((middle.start, middle.end, room),))
+        before = replace(config, end=config.start + timedelta(minutes=2))
+        self.assertEqual(longest_lamp_runs(before), {"kitchen": 0, "living": 0})
 
     def test_polar_day_uses_configured_sunset_fallback(self):
         tz = ZoneInfo("Europe/Oslo")

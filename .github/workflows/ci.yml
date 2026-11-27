@@ -2,7 +2,10 @@ name: Tests
 
 on:
   push:
+    branches: ['**']
+    tags-ignore: ['v*-preview.*']
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
@@ -56,6 +59,7 @@ jobs:
           set -eu
           release_dir="$(mktemp -d "${RUNNER_TEMP}/vacation-ghost-package.XXXXXX")"
           source_dir="$release_dir/source"
+          source_revision=$(git rev-parse HEAD)
           mkdir "$source_dir"
           git --no-replace-objects archive --format=tar HEAD > "$release_dir/source.tar"
           tar -xf "$release_dir/source.tar" -C "$source_dir"
@@ -63,6 +67,11 @@ jobs:
 
           printf '%s\n' '# Synthetic private config for the archive check.' \
             > "$source_dir/examples/household.local.toml"
+          mkdir "$source_dir/state"
+          for private_file in docs/bench.local.md deploy/network.local.txt state/latest.json; do
+            git check-ignore --quiet --no-index "$private_file"
+            printf '%s\n' 'Synthetic private working file.' > "$source_dir/$private_file"
+          done
           python -m build --sdist --outdir "$release_dir/privacy-check" "$source_dir"
 
           python - "$release_dir" <<'PY'
@@ -74,10 +83,14 @@ jobs:
           examples = {"examples/vacation.example.toml", "examples/vacation.lights-only.toml"}
           required = examples | {
               "LICENSE", "README.md", "CONTRIBUTING.md",
-              "docs/hardware.md", "docs/service.md", "docs/images/vacation-ghost-evening.gif",
+              "docs/hardware.md", "docs/service.md", "docs/bench.md", "docs/device-profiles.md",
+              "docs/images/vacation-ghost-evening.gif",
               "deploy/vacation-ghost.service", "deploy/lights-only.conf",
-              "deploy/rpi-ws281x-source.txt", "tools/generate_sounds.py",
+              "deploy/10-device-user.conf", "deploy/20-usb-audio.conf", "deploy/20-spi-glow.conf",
+              "deploy/rpi-ws281x-source.txt", "tools/generate_sounds.py", "tools/pi_service.py",
+              "tools/bench_record.py", "vacation_ghost/_audio_player.py", "vacation_ghost/version.py",
           }
+          private = {"docs/bench.local.md", "deploy/network.local.txt", "state/latest.json"}
           for output_dir in ("dist", "privacy-check"):
               source_archive, = (release / output_dir).glob("*.tar.gz")
               with tarfile.open(source_archive, "r:gz") as archive:
@@ -87,6 +100,7 @@ jobs:
                       if member.isfile()
                   }
                   assert required <= paths, sorted(required - paths)
+                  assert not paths & private, sorted(paths & private)
                   config_paths = {path for path in paths if path.startswith("examples/") and path.endswith(".toml")}
                   assert config_paths == examples, sorted(config_paths ^ examples)
 
@@ -99,6 +113,8 @@ jobs:
           python -m venv "$release_dir/venv"
           "$release_dir/venv/bin/python" -m pip install --no-index --no-deps "$release_dir"/dist/*.whl
           cd "$release_dir"
+          wheel_version=$(venv/bin/python -c 'from importlib.metadata import version; print(version("vacation-ghost"))')
+          test "$(venv/bin/vacation-ghost --version)" = "Vacation Ghost $wheel_version (commit $source_revision)"
           venv/bin/vacation-ghost --config vacation.example.toml simulate --state-dir state
           venv/bin/python - <<'PY'
           import json

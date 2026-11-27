@@ -13,7 +13,7 @@ from typing import Protocol
 
 from .config import Config
 from .reports import ReportStore
-from .schedule import DayPlan, build_day
+from .schedule import DayPlan, build_config_day
 from .state import OutputReservation
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,18 @@ DARK = (0, 0, 0)
 
 class PlugError(RuntimeError):
     """A relay state could not be confirmed."""
+
+
+class PlugIdentityError(PlugError):
+    """A plug could not be identified before starting the routine."""
+
+
+class PlugPairingError(PlugIdentityError):
+    """The plug identities require an explicit commissioning change."""
+
+
+class RehearsalIncomplete(RuntimeError):
+    """The operator interrupted the rehearsal before every stage finished."""
 
 
 class Outputs(Protocol):
@@ -108,17 +120,7 @@ class Routine:
         self.day = lru_cache(maxsize=2)(self.day)
 
     def day(self, day: date) -> DayPlan:
-        config = self.config
-        return build_day(
-            day,
-            config.timezone,
-            config.rooms,
-            sunset_fallback=config.sunset,
-            bedtime=config.bedtime,
-            latitude=config.latitude,
-            longitude=config.longitude,
-            seed=config.seed,
-        )
+        return build_config_day(self.config, day)
 
     def active(self, at: datetime) -> bool:
         return self.start <= utc(at) < self.end
@@ -146,6 +148,7 @@ class Controller:
         self.outputs = outputs
         self.reports = reports
         self.room: str | None = None
+        self.startup_error: str | None = None
         self.scene = ""
         self.random = Random()
         self.color = DARK
@@ -289,15 +292,20 @@ class Controller:
             self.failed_peripherals.add(device)
             self.reports.record_device_fault(now, device)
 
-    def play_cue(self, now: datetime, cue: str, can_start: Callable[[], bool]) -> None:
+    def play_cue(self, now: datetime, cue: str, can_start: Callable[[], bool]) -> bool:
+        started = False
+
         def play() -> None:
+            nonlocal started
             guarded_play = getattr(self.outputs, "play_sound_if", None)
             if guarded_play is not None:
-                guarded_play(cue, can_start)
+                started = guarded_play(cue, can_start)
             elif can_start():
                 self.outputs.play_sound(cue)
+                started = True
 
         self.peripheral(now, "sound", play)
+        return started
 
     def record_off(self, now: datetime, result: _OffResult) -> None:
         if "glow" not in result.peripheral_faults:
@@ -345,10 +353,13 @@ def simulate(config: Config, outputs: Outputs, reports: ReportStore, through: da
     controller = Controller(config.rooms, outputs, reports)
     through = through.astimezone(config.timezone)
     cutoff = min(utc(through), routine.end)
+    led_enabled = config.hardware is None or bool(config.hardware.led_count)
+    sound_enabled = config.hardware is None or bool(config.hardware.volume)
     if cutoff >= routine.start:
         room, scene, _ = routine.desired(config.start, config.start)
         controller.lamp(config.start, room)
-        controller.glow(config.start, scene)
+        if led_enabled:
+            controller.glow(config.start, scene)
     day = config.start.date()
     while day <= through.date() and day <= config.end.date():
         plan = routine.day(day)
@@ -360,14 +371,14 @@ def simulate(config: Config, outputs: Outputs, reports: ReportStore, through: da
                 continue
             if event.kind == "lamp":
                 controller.lamp(event.at, event.value or None)
-            elif event.kind == "glow":
+            elif event.kind == "glow" and led_enabled:
                 controller.glow(event.at, event.value)
-            elif event.kind == "sound":
+            elif event.kind == "sound" and sound_enabled:
                 outputs.play_sound(event.value)
         day += timedelta(days=1)
     if utc(through) >= routine.end:
         reports.complete(config.end)
-        controller.off(config.end, led_enabled=config.hardware is None or bool(config.hardware.led_count))
+        controller.off(config.end, led_enabled=led_enabled)
     reports.status(through, routine.active(through), controller.room)
     reports.publish_due(through)
 
@@ -499,6 +510,7 @@ def run(
                 if routine.active(now):
                     if not initialized:
                         reservation.engage()
+                        controller.startup_error = None
                         reset_at = clock()
                         if trip_finished(reset_at):
                             break
@@ -536,10 +548,16 @@ def run(
                 logger.warning("Plug fault: %s", exc)
                 fault_at = clock()
                 ended = trip_finished(fault_at)
-                controller.record_plug_fault(fault_at)
-                reports.status(fault_at, False, None, force=True)
-                if ended:
+                if isinstance(exc, PlugIdentityError):
+                    controller.startup_error = str(exc)
+                    reports.record_device_fault(fault_at, "plug")
+                else:
+                    controller.record_plug_fault(fault_at)
+                reports.status(fault_at, False, None, force=True, startup_error=controller.startup_error)
+                if ended or stop.is_set():
                     break
+                if isinstance(exc, PlugPairingError):
+                    raise
                 initialized = False
                 if plug_failures >= len(RETRY_DELAYS):
                     raise
@@ -587,7 +605,7 @@ def _publish_stopped(
         if confirmed:
             reports.confirm_shutdown(relay_off_verified=True, led_black_frame_sent=reservation.led_black_frame_sent)
     finally:
-        reports.status(clock(), False, None, force=True)
+        reports.status(clock(), False, None, force=True, startup_error=controller.startup_error)
         reports.publish_due(clock())
     if confirmed and not reservation.engaged:
         reservation.clear_shutdown_confirmation()
@@ -595,7 +613,7 @@ def _publish_stopped(
 
 def rehearse(
     config: Config, controller: Controller, stop: StopEvent, reservation: OutputReservation
-) -> None:
+) -> str:
     """Exercise each output in order, regardless of the configured trip dates."""
     def clock() -> datetime:
         return datetime.now(config.timezone)
@@ -604,6 +622,11 @@ def rehearse(
         return not stop.is_set()
 
     led_enabled = config.hardware is None or bool(config.hardware.led_count)
+    sound_enabled = config.hardware is None or bool(config.hardware.volume)
+    lamps: list[str] = []
+    cues: list[str] = []
+    color_sent = False
+    finished = False
     reservation.engage()
     try:
         controller.off(clock(), glow_pending=reservation.glow_pending, led_enabled=led_enabled, clock=clock)
@@ -611,9 +634,12 @@ def rehearse(
             if not can_start():
                 break
             controller.lamp(clock(), room, can_start, clock=clock)
+            if controller.room == room:
+                lamps.append(room)
             if not can_start():
                 break
-            controller.play_cue(clock(), cue, can_start)
+            if sound_enabled and controller.play_cue(clock(), cue, can_start):
+                cues.append(cue)
             if scene and "glow" not in controller.failed_peripherals and led_enabled:
                 reservation.before_glow()
             for _ in range(30):
@@ -621,9 +647,37 @@ def rehearse(
                     break
                 if led_enabled:
                     controller.update_glow(clock(), scene)
+                    if controller.color != DARK:
+                        color_sent = True
                 controller.peripheral(clock(), "sound", controller.outputs.poll_audio)
-        if controller.failed_peripherals:
-            raise RuntimeError("rehearsal found faults in " + ", ".join(sorted(controller.failed_peripherals)))
+            if stop.is_set():
+                break
+        else:
+            finished = True
     finally:
-        _shutdown(controller, reservation, clock, led_enabled=led_enabled)
+        outcome = "failed"
+        try:
+            _shutdown(controller, reservation, clock, led_enabled=led_enabled)
+        except Exception:
+            try:
+                controller.reports.write_rehearsal(clock(), outcome, lamps, cues, color_sent)
+            except (OSError, ValueError) as report_error:
+                logger.warning("Could not save the failed rehearsal result: %s", report_error)
+            raise
+        if not controller.failed_peripherals:
+            if finished:
+                outcome = "completed"
+            elif stop.is_set():
+                outcome = "interrupted"
+        controller.reports.write_rehearsal(clock(), outcome, lamps, cues, color_sent)
         reservation.clear_shutdown_confirmation()
+    if controller.failed_peripherals:
+        raise RuntimeError("rehearsal found faults in " + ", ".join(sorted(controller.failed_peripherals)))
+    exercised = (
+        f"Lamps confirmed on: {', '.join(lamps) or 'none'}. "
+        f"Sound cues started: {', '.join(cues) or 'none'}. "
+        f"Color frame sent: {'yes' if color_sent else 'no'}."
+    )
+    if not finished:
+        raise RehearsalIncomplete("Rehearsal interrupted. " + exercised)
+    return exercised

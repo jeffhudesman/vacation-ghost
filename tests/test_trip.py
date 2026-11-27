@@ -63,6 +63,26 @@ class TripTest(unittest.TestCase):
                 hardware.assert_called_once()
                 self.assertEqual(hardware.call_args.args[1].sunset, time(22))
 
+    def test_simulation_honors_lights_only_settings_and_retains_the_showcase(self):
+        lights = load_config(EXAMPLE.with_name("vacation.lights-only.toml"))
+        for config in (lights, self.config):
+            for complete in (False, True):
+                enabled = config.hardware is None
+                with self.subTest(enabled=enabled, complete=complete):
+                    through = config.end if complete else config.start.replace(hour=23, minute=55)
+                    state = self.state / f"{enabled}-{complete}"
+                    reports = ReportStore(state, config.start, config.end, dry_run=True)
+                    outputs = SimulationOutputs()
+                    with (
+                        patch.object(outputs, "play_sound", wraps=outputs.play_sound) as sounds,
+                        patch.object(outputs, "set_glow", wraps=outputs.set_glow) as frames,
+                    ):
+                        simulate(config, outputs, reports, through)
+                    latest = json.loads((state / "latest.json").read_text())
+                    self.assertIs(latest["led_black_frame_sent"], True if enabled else None)
+                    self.assertEqual(sounds.called, enabled)
+                    self.assertEqual(any(any(call.args[0]) for call in frames.call_args_list), enabled)
+
     def test_replay_reports_skipped_late_evening(self):
         zone = ZoneInfo("Europe/Oslo")
         config = replace(self.config, timezone=zone, start=datetime(2030, 6, 21, 12, tzinfo=zone),
@@ -142,7 +162,7 @@ class TripTest(unittest.TestCase):
             Event(start + timedelta(seconds=2), "glow", "drama"),
         ))
         outputs = CheckedOutputs()
-        with patch("vacation_ghost.engine.datetime", Clock), patch("vacation_ghost.engine.build_day", return_value=plan):
+        with patch("vacation_ghost.engine.datetime", Clock), patch("vacation_ghost.engine.build_config_day", return_value=plan):
             run(config, Controller(config.rooms, outputs, reports), Clock)
         self.assertEqual(outputs.rooms, [kitchen, living])
         self.assertEqual(outputs.cues, ["kettle"])

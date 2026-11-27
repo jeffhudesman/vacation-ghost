@@ -1,5 +1,6 @@
 import hashlib
 import json
+from dataclasses import replace
 import unittest
 from datetime import timedelta
 from pathlib import Path
@@ -9,6 +10,7 @@ from unittest.mock import patch
 
 from vacation_ghost import __main__ as cli
 from vacation_ghost.config import load_config
+from vacation_ghost.engine import PlugPairingError, RehearsalIncomplete
 from vacation_ghost.reports import ReportStore
 from vacation_ghost.state import OutputReservation
 
@@ -57,6 +59,7 @@ class HardwareSafetyTests(unittest.TestCase):
         return reservation
 
     def test_run_and_rehearse_reject_two_addresses_for_one_plug_before_switching(self):
+        cli._pair(self.config, replace=False)
         self.identities["living"] = self.identities["kitchen"]
         with patch("vacation_ghost.engine.datetime") as clock:
             clock.now.return_value = self.config.start + timedelta(seconds=1)
@@ -65,6 +68,48 @@ class HardwareSafetyTests(unittest.TestCase):
                     cli._hardware_command(command, self.config, self.trip / command)
         self.assertEqual(self.writes, [])
         self.assertFalse((self.device / "outputs.json").exists())
+
+    def test_idle_service_cannot_pass_commissioning_without_a_pairing(self):
+        with patch.object(cli, "datetime") as clock, self.assertRaisesRegex(PlugPairingError, "paired rooms"):
+            clock.now.return_value = self.config.start - timedelta(days=1)
+            cli._hardware_command("run", self.config, self.trip)
+        self.rpc.assert_not_called()
+        self.assertFalse((self.trip / "latest.json").exists())
+
+    def test_replacement_requires_explicit_pairing_after_clean_shutdown(self):
+        with self.assertRaisesRegex(PlugPairingError, "No paired plugs"):
+            cli._hardware_command("rehearse", self.config, self.trip)
+        cli._pair(self.config, replace=False)
+        binding = self.device / "paired-plugs.json"
+        original = binding.read_bytes()
+        self.assertEqual(binding.stat().st_mode & 0o777, 0o600)
+        reservation = self.reserve_outputs()
+        with self.assertRaisesRegex(RuntimeError, "pending shutdown"):
+            cli._pair(self.config, replace=True)
+        cli._hardware_command("recover", self.config, self.trip)
+        self.assertFalse(reservation.engaged)
+        self.writes.clear()
+        self.identities["kitchen"] = "001122334477"
+        with self.assertRaisesRegex(PlugPairingError, "pairing changed"):
+            cli._hardware_command("rehearse", self.config, self.trip)
+        with self.assertRaisesRegex(PlugPairingError, "pair --replace"):
+            cli._pair(self.config, replace=False)
+        self.assertEqual(binding.read_bytes(), original)
+        cli._pair(self.config, replace=True)
+        self.assertEqual(json.loads(binding.read_text()), self.identities)
+        self.assertEqual(self.writes, [])
+
+    def test_unknown_setting_prevents_actuation_after_recovering_pending_shutdown(self):
+        for command in ("rehearse", "run"):
+            with self.subTest(command=command):
+                self.trip = self.device.parent / command
+                self.reserve_outputs()
+                self.writes.clear()
+                config = replace(self.config, unknown_settings=("hardware.volum",))
+                with self.assertRaisesRegex(ValueError, "hardware.volum"):
+                    cli._hardware_command(command, config, self.trip)
+                self.assertEqual(self.writes, [("kitchen", False), ("living", False)])
+                self.assertFalse((self.device / "outputs.json").exists())
 
     def test_recovery_preserves_pending_state_and_attempts_other_relay_on_mac_mismatch(self):
         reservation = self.reserve_outputs()
@@ -85,12 +130,17 @@ class HardwareSafetyTests(unittest.TestCase):
         self.assertFalse(self.relays["kitchen"])
 
     def test_legacy_reservation_migrates_off_before_binding_plugs_for_rehearsal(self):
+        cli._pair(self.config, replace=False)
+        self.rpc.reset_mock()
         self.trip.mkdir()
         legacy = OutputReservation(self.trip, self.device, hardware_id=self.hardware_id)
         legacy.engage()
         stop = Event()
         stop.set()
-        with patch.object(cli, "_stop_event", return_value=stop), self.assertLogs(level="WARNING") as logs:
+        with (
+            patch.object(cli, "_stop_event", return_value=stop), self.assertLogs(level="WARNING") as logs,
+            self.assertRaises(RehearsalIncomplete),
+        ):
             cli._hardware_command("rehearse", self.config, self.trip)
         self.assertIn("Legacy shutdown record", "\n".join(logs.output))
         operations = [call.args[1] for call in self.rpc.call_args_list]

@@ -8,6 +8,7 @@ Type=exec
 WorkingDirectory=/opt/vacation-ghost
 ExecStart=/opt/vacation-ghost/.venv/bin/python -m vacation_ghost --config /etc/vacation-ghost/vacation.toml run --state-dir /var/lib/vacation-ghost/current
 Restart=on-failure
+RestartPreventExitStatus=78
 RestartSec=5s
 KillMode=mixed
 TimeoutStopSec=90s

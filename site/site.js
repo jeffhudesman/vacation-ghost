@@ -1,17 +1,16 @@
-const demoScenes = [
+const eveningScenes = [
   { name: "kitchen", title: "Sunset", time: "19:34", label: "7:34 PM", lamp: "kitchen", text: "Near sunset, the kitchen lamp switches on." },
   { name: "living", title: "After dinner", time: "20:10", label: "8:10 PM", lamp: "living", text: "The kitchen goes dark and the living room lamp switches on." },
   { name: "tv", title: "TV time", time: "20:18", label: "8:18 PM", lamp: "living", glow: "sports", cue: "tv",
-    text: "The living room lamp is on, with a faster TV glow if enabled. The optional TV sound plays." },
+    text: "The living room lamp stays on with a fast TV glow. The sound cue is a TV." },
   { name: "break", title: "Kitchen break", time: "21:38", label: "9:38 PM", lamp: "kitchen", cue: "cabinet",
-    text: "The kitchen lamp is back on and the TV glow is off. The optional cabinet sound plays." },
+    text: "The kitchen lamp is back on and the TV glow is off. The sound cue is a closing cabinet." },
   { name: "drama", title: "Late TV", time: "21:48", label: "9:48 PM", lamp: "living", glow: "drama",
     text: "The living room lamp is back on. A slower TV glow starts if enabled." },
   { name: "bedtime", title: "Bedtime", time: "22:45", label: "10:45 PM", text: "The last lamp switches off." },
   { name: "morning", title: "Morning kitchen", time: "07:18", label: "7:18 AM", lamp: "kitchen", period: "dawn", cue: "kettle",
-    text: "The kitchen lamp is on. The optional kettle sound plays." },
-  { name: "report", title: "Morning note", time: "08:00", label: "8:00 AM", period: "dawn",
-    text: "The example morning report is ready." },
+    text: "The kitchen lamp is on. The sound cue is a kettle." },
+  { name: "report", title: "Morning note", time: "08:00", label: "8:00 AM", period: "dawn" },
 ];
 
 function setupEveningDemo() {
@@ -34,9 +33,17 @@ function setupEveningDemo() {
   const progress = card.querySelector("#scene-progress");
   const report = card.querySelector(".demo-report");
   const sceneButtons = [...card.querySelectorAll("[data-scene-button]")];
-  const sceneDuration = 3000;
-  const lastScene = demoScenes.length - 1;
-  progress.max = lastScene * sceneDuration / 1000;
+  const extras = card.querySelector("#scene-extras");
+  const audioStatus = card.querySelector("#scene-audio-status");
+  const modeLabel = card.querySelector("#demo-mode");
+  const receipt = report.querySelector("blockquote");
+  // Both paths reach the receipt after the 21 seconds advertised in the hero.
+  const demoDuration = 21000;
+  const lightsOnly = eveningScenes.filter(({ cue, glow }) => !cue && !glow);
+  let demoScenes = lightsOnly;
+  let lastScene = demoScenes.length - 1;
+  let sceneDuration = demoDuration / lastScene;
+  progress.max = demoDuration / 1000;
   let sceneIndex = null;
   let playState = "ready";
   let timer;
@@ -44,6 +51,7 @@ function setupEveningDemo() {
   let nextSceneAt;
   let remaining = sceneDuration;
   let soundEnabled = false;
+  let audioRequest = 0;
 
   function updateProgress(timeLeft = sceneDuration) {
     const elapsed = sceneDuration - Math.min(sceneDuration, Math.max(0, timeLeft));
@@ -76,6 +84,7 @@ function setupEveningDemo() {
   }
 
   function stopAudio() {
+    audioRequest++;
     audio.pause();
     audio.currentTime = 0;
   }
@@ -96,8 +105,12 @@ function setupEveningDemo() {
     const source = `assets/demo-${cue}.mp3`;
     if (audio.getAttribute("src") !== source) audio.src = source;
     audio.volume = 0.12;
-    // Media errors or browser playback restrictions do not stop the visual demo.
-    audio.play().catch(() => {});
+    const request = audioRequest;
+    audio.play().catch(() => {
+      if (request !== audioRequest) return;
+      setSound(false);
+      audioStatus.textContent = "Sound unavailable. Select Sound to try again.";
+    });
   }
 
   function showScene(index = null) {
@@ -111,9 +124,9 @@ function setupEveningDemo() {
       sceneTime.dateTime = time;
       sceneTime.textContent = label;
     }
-    sceneText.textContent = text;
-    updateProgress();
     const isReport = index === lastScene;
+    sceneText.textContent = isReport ? receipt.textContent : text;
+    updateProgress();
     report.hidden = !isReport;
     if (isReport) report.dataset.current = "true";
     else delete report.dataset.current;
@@ -165,12 +178,15 @@ function setupEveningDemo() {
 
   restartButton.addEventListener("click", restartPlayback);
 
-  soundButton.addEventListener("click", () => {
-    soundEnabled = !soundEnabled;
+  function setSound(enabled) {
+    soundEnabled = enabled;
     soundButton.setAttribute("aria-pressed", String(soundEnabled));
     soundState.textContent = soundEnabled ? "on" : "off";
+    audioStatus.textContent = "";
     playCue();
-  });
+  }
+
+  soundButton.addEventListener("click", () => setSound(!soundEnabled));
 
   function selectScene(index) {
     if (!demoScenes[index]) return false;
@@ -182,6 +198,36 @@ function setupEveningDemo() {
     else setPlayback("ready");
     return true;
   }
+
+  function resetWalkthrough() {
+    clearTimeout(timer);
+    remaining = sceneDuration;
+    showScene();
+    setPlayback("ready");
+  }
+
+  function setScenes() {
+    const prior = demoScenes[sceneIndex];
+    demoScenes = extras.checked ? eveningScenes : lightsOnly;
+    lastScene = demoScenes.length - 1;
+    sceneDuration = demoDuration / lastScene;
+    for (const button of sceneButtons) {
+      button.hidden = !demoScenes.some(({ name }) => button.dataset.sceneButton === name);
+    }
+    soundButton.hidden = !extras.checked;
+    modeLabel.textContent = extras.checked ? "Two lamps + extras" : "Two lamps";
+    if (!extras.checked) setSound(false);
+    if (prior && prior.name !== "report") {
+      // An optional chapter falls back to the most recent lights-only chapter.
+      const preceding = eveningScenes.slice(0, eveningScenes.indexOf(prior) + 1);
+      const retained = preceding.filter(setting => demoScenes.includes(setting)).pop();
+      selectScene(demoScenes.indexOf(retained));
+    } else {
+      resetWalkthrough();
+    }
+  }
+
+  extras.addEventListener("change", setScenes);
 
   for (const [button, step] of [[previous, -1], [next, 1]]) {
     button.addEventListener("click", () => {
@@ -221,21 +267,29 @@ function setupEveningDemo() {
     event.preventDefault();
     if (location.hash !== "#sample-evening") history.pushState(null, "", "#sample-evening");
     card.scrollIntoView({ block: "start", behavior: "instant" });
-    if (reduced.matches) next.focus({ preventScroll: true });
-    else {
+    if (reduced.matches) {
+      resetWalkthrough();
+      next.focus({ preventScroll: true });
+    } else {
       restartPlayback();
       playButton.focus({ preventScroll: true });
     }
   });
 
   card.dataset.interactive = "true";
-  showScene();
-  setPlayback("ready");
+  setScenes();
   card.querySelector(".routine-interactions").hidden = false;
   return () => selectScene(lastScene);
 }
 
 const showEveningReport = setupEveningDemo();
+
+const transcript = document.querySelector(".routine-transcript");
+const transcriptHash = "#sample-evening-transcript";
+transcript.open = location.hash === transcriptHash;
+window.addEventListener("hashchange", () => {
+  if (location.hash === transcriptHash) transcript.open = true;
+});
 
 const setupTabs = document.querySelector(".setup-tabs");
 const tabs = [...setupTabs.querySelectorAll("[role=tab]")];

@@ -19,10 +19,14 @@ jobs:
           python-version: "3.12"
       - name: Install browser test runner
         run: python -m pip install playwright==1.62.0
+      - name: Install WebKit and its system dependencies
+        run: python -m playwright install --with-deps webkit
       - name: Install Chromium when the runner has no browser
         run: |
           if ! command -v chromium >/dev/null && ! command -v google-chrome >/dev/null; then
             python -m playwright install --with-deps chromium
           fi
-      - name: Check website and simulator
-        run: python tools/check_site.py --browser
+      - name: Check documentation, links and examples
+        run: python tools/check_docs.py
+      - name: Check website and simulator in Chromium and WebKit
+        run: python tools/check_site.py --browser --webkit

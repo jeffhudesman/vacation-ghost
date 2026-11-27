@@ -9,7 +9,7 @@ The Preview 2 simulator ran on a Raspberry Pi 5. Physical testing is pending for
 Use a Raspberry Pi Zero 2 W, Pi 4, or Pi 5 running Raspberry Pi OS. You’ll need a terminal with `sudo` access, two [compatible plugs](hardware.md#hardware-compatibility), and the ability to restrict access to the plugs on your local network. Use two lamps that turn on when power returns. If you already have an installation, see [how to upgrade or change profiles](#upgrade-or-switch-profiles) first.
 
 1. [Prepare the Pi and plugs](#prepare-the-pi-and-plugs).
-2. [Install from a verified release](#install-from-a-verified-release) and [set the trip and plug addresses](#set-the-trip-and-plug-addresses).
+2. [Install the release](#install-from-a-verified-release) and its [service helper](#install-the-service-helper), then [set the trip and plug addresses](#set-the-trip-and-plug-addresses).
 3. [Set up the lights-only service account](#use-the-lights-only-profile).
 4. [Check both plugs, rehearse, and start the service](#check-and-start).
 5. [Verify the setup while home](#verify-the-setup-while-home).
@@ -22,7 +22,7 @@ On the Pi, install Git, Python’s virtual-environment tools, the system time-zo
 
 ```sh
 sudo apt-get update
-sudo apt-get install -y ca-certificates git python3-venv tzdata
+sudo apt-get install -y ca-certificates curl git python3-venv tzdata
 /usr/bin/python3 --version
 timedatectl status
 ```
@@ -53,7 +53,7 @@ source_dir=$(mktemp -d /tmp/vacation-ghost-source.XXXXXX)
 release_dir=$(mktemp -d /tmp/vacation-ghost-release.XXXXXX)
 (
   set -eu
-  git clone --no-checkout https://github.com/jeffhudesman/vacation-ghost.git "$source_dir"
+  git clone --depth 1 --branch "$release_tag" --no-checkout https://github.com/jeffhudesman/vacation-ghost.git "$source_dir"
   cd "$source_dir"
   resolved_commit=$(git --no-replace-objects rev-parse --verify --end-of-options "refs/tags/$release_tag^{commit}")
   if [ "$resolved_commit" != "$release_commit" ]; then
@@ -65,6 +65,11 @@ release_dir=$(mktemp -d /tmp/vacation-ghost-release.XXXXXX)
   git --no-replace-objects archive --format=tar "$resolved_commit" > "$release_dir/source.tar"
   tar -xf "$release_dir/source.tar" -C "$release_dir"
   printf '%s\n' "$resolved_commit" > "$release_dir/.verified"
+  /usr/bin/python3 -I - "$release_dir/pyproject.toml" "$resolved_commit" > "$release_dir/BUILD.json" <<'PYTHON'
+import json, sys, tomllib
+with open(sys.argv[1], "rb") as metadata:
+    print(json.dumps({"version": tomllib.load(metadata)["project"]["version"], "commit": sys.argv[2]}))
+PYTHON
   printf 'Verified release commit: %s\n' "$resolved_commit"
 )
 ```
@@ -78,6 +83,7 @@ Check that `Verified release commit` shows the same full commit ID as the releas
   sudo install -d -o root -g root -m 0755 /opt/vacation-ghost
   sudo install -d -o root -g root -m 0755 /opt/vacation-ghost/vacation_ghost /opt/vacation-ghost/tools /opt/vacation-ghost/deploy
   sudo install -o root -g root -m 0644 "$release_dir"/vacation_ghost/*.py /opt/vacation-ghost/vacation_ghost/
+  sudo install -o root -g root -m 0644 "$release_dir/BUILD.json" /opt/vacation-ghost/vacation_ghost/BUILD.json
   sudo install -o root -g root -m 0644 "$release_dir/tools/generate_sounds.py" /opt/vacation-ghost/tools/
   sudo install -o root -g root -m 0644 "$release_dir"/deploy/* /opt/vacation-ghost/deploy/
   sudo /usr/bin/python3 -I -m venv /opt/vacation-ghost/.venv
@@ -91,6 +97,25 @@ Check that `Verified release commit` shows the same full commit ID as the releas
   if ! sudo test -e /etc/vacation-ghost/vacation.toml; then
     sudo install -o root -g root -m 0600 "$release_dir/examples/vacation.lights-only.toml" /etc/vacation-ghost/vacation.toml
   fi
+)
+```
+
+Read the installed version and full source commit at any time with `cat /opt/vacation-ghost/vacation_ghost/BUILD.json`. The service helper below works with both the tagged Preview 2 runtime and the development checkout.
+
+### Install the service helper
+
+Install the maintained [service helper](../tools/pi_service.py) on a new Pi or an existing Preview 2 install. The download is pinned to the helper’s source commit. The SHA-256 check runs before installation.
+
+```sh
+(
+  set -eu
+  helper_dir=$(mktemp -d)
+  curl --fail --silent --show-error --location --proto '=https' \
+    https://raw.githubusercontent.com/jeffhudesman/vacation-ghost/19ad4d5228fbada70bc0411eec8837c845480555/tools/pi_service.py \
+    --output "$helper_dir/pi_service.py"
+  cd "$helper_dir"
+  printf '%s  pi_service.py\n' ebce0151f16c01edfed2e0b257f70e84bf578998ec29d2991d597f3d0728ef6d | sha256sum --check --status
+  sudo install -o root -g root -m 0644 pi_service.py /opt/vacation-ghost/tools/pi_service.py
 )
 ```
 
@@ -136,16 +161,18 @@ For two-plug installations with both optional outputs disabled, install the drop
   sudo -u vacation-ghost -g vacation-ghost test -r /etc/vacation-ghost/vacation.toml
   sudo -u vacation-ghost -g vacation-ghost test -w /var/lib/vacation-ghost
   sudo install -d -o root -g root -m 0755 /etc/systemd/system/vacation-ghost.service.d
+  dropins=/etc/systemd/system/vacation-ghost.service.d
+  sudo rm -f "$dropins/10-device-user.conf" "$dropins/20-usb-audio.conf" "$dropins/20-spi-glow.conf"
   sudo install -o root -g root -m 0644 /opt/vacation-ghost/deploy/lights-only.conf \
     /etc/systemd/system/vacation-ghost.service.d/lights-only.conf
 )
 ```
 
-The permission checks in this block complete silently when the service account can read the config and write to the state directory.
+The permission checks complete silently when the service account can read the config and write to the state directory. If this was a development device profile, remove the dedicated account’s unused `audio` or `spi` group membership with `sudo gpasswd -d vacation-ghost audio` or `sudo gpasswd -d vacation-ghost spi` for each group previously added. After commissioning, `systemctl show vacation-ghost.service -p User -p PrivateDevices` should report `User=vacation-ghost` and `PrivateDevices=yes`.
 
 ### Check and start
 
-Run the checks from the root-owned install. These commands use the lights-only `vacation-ghost` account. If you set up the base service for optional hardware, set `service_user=root` in the check, start, disarm, and recovery commands. `doctor` reads the relay state and device identity from each plug and checks that you configured two distinct devices. It checks for the optional driver and cue files when enabled. `rehearse` ignores trip dates and briefly drives the connected outputs. Run it when you are home, with the scheduled service stopped and using separate state.
+Run the checks from the root-owned install. These commands use the lights-only `vacation-ghost` account. If you set up the base service for optional hardware, set `service_user=root` in the foreground checks and recovery example, and pass `--service-user root` to the service helper. `doctor` reads the relay state and device identity from each plug and checks that you configured two distinct devices. It checks for the optional driver and cue files when enabled. `rehearse` ignores trip dates and briefly drives the connected outputs. Run it when you are home, with the scheduled service stopped and using separate state.
 
 ```sh
 (
@@ -163,126 +190,13 @@ Run the checks from the root-owned install. These commands use the lights-only `
 
 For lights only, `doctor` should show the current state of both plugs, with TV glow and sound listed as disabled. Watch the rehearsal to confirm the lamps take turns and both turn off at the end.
 
-Install the unit from the verified release after rehearsal succeeds. Keep the departure far enough in the future to finish this check while the trip is idle. The commands require a stopped unit, start a new service invocation, and wait for a fresh idle status for the configured trip. Look for `Vacation Ghost is idle and waiting for departure` before the unit is enabled at boot.
+After rehearsal succeeds, keep the departure in the future and the unit stopped. The [service helper](#install-the-service-helper) checks that the unit is absent or stopped before installing and verifying it, checks the configured service account, and starts it. It waits up to 35 seconds for fresh, fault-free idle status from the expected trip and verifies the same invocation is active with zero restarts before enabling startup at boot.
 
 ```sh
-(
-  set -eu
-  service_user=vacation-ghost
-  unit=vacation-ghost.service
-  cd /opt/vacation-ghost
-  sudo install -o root -g root -m 0644 /opt/vacation-ghost/deploy/vacation-ghost.service /etc/systemd/system/vacation-ghost.service
-  sudo systemd-analyze verify /etc/systemd/system/vacation-ghost.service
-  sudo systemctl daemon-reload
-  unit_user=$(sudo systemctl show --property=User --value "$unit")
-  if [ "${unit_user:-root}" != "$service_user" ]; then
-    printf 'Expected service account %s, found %s. Check the installed profile.\n' \
-      "$service_user" "${unit_user:-root}" >&2
-    exit 1
-  fi
-
-  unit_state=$(sudo systemctl show --property=ActiveState --value "$unit")
-  case "$unit_state" in
-    inactive|failed) ;;
-    *)
-      printf 'The service is %s. Follow the shutdown and retry instructions before commissioning again.\n' \
-        "$unit_state" >&2
-      exit 1
-      ;;
-  esac
-  previous_restarts=$(sudo systemctl show --property=NRestarts --value "$unit")
-  if [ "$unit_state" = failed ] || [ "$previous_restarts" != 0 ]; then
-    sudo systemctl reset-failed "$unit"
-  fi
-  previous_invocation=$(sudo systemctl show --property=InvocationID --value "$unit")
-
-  expected_trip=$(sudo -u "$service_user" -g "$service_user" /opt/vacation-ghost/.venv/bin/python \
-    - /etc/vacation-ghost/vacation.toml <<'PY'
-import sys
-from datetime import UTC, datetime
-from pathlib import Path
-
-from vacation_ghost.config import load_config
-from vacation_ghost.reports import trip_identity
-
-config = load_config(Path(sys.argv[1]))
-if config.start <= datetime.now(UTC):
-    raise SystemExit("Set a future departure before starting the service.")
-print(trip_identity(config.start, config.end))
-PY
-  )
-  status_file=/var/lib/vacation-ghost/current/latest.json
-  previous_inode=$(sudo -u "$service_user" -g "$service_user" stat -c '%i' "$status_file" 2>/dev/null || true)
-  started_at=$(/usr/bin/python3 -c 'import time; print(time.time())')
-
-  commissioning_failed() {
-    printf 'Commissioning failed. Follow the shutdown and retry instructions below.\n' >&2
-    sudo journalctl -u "$unit" -n 40 --no-pager || true
-    exit 1
-  }
-
-  sudo systemctl start "$unit" || commissioning_failed
-  invocation=$(sudo systemctl show --property=InvocationID --value "$unit") || commissioning_failed
-  case "$invocation" in
-    ""|00000000000000000000000000000000|"$previous_invocation") commissioning_failed ;;
-  esac
-
-  if ! idle_at=$(sudo -u "$service_user" -g "$service_user" /opt/vacation-ghost/.venv/bin/python \
-    - "$status_file" "$previous_inode" "$started_at" "$expected_trip" <<'PY'
-import json
-import os
-import sys
-import time
-from datetime import datetime
-from pathlib import Path
-
-path, previous_inode, started_at, expected_trip = sys.argv[1:]
-deadline = time.monotonic() + 35
-while time.monotonic() < deadline:
-    try:
-        with Path(path).open() as stream:
-            inode = str(os.fstat(stream.fileno()).st_ino)
-            status = json.load(stream)
-        if not isinstance(status, dict):
-            raise ValueError("status must be a JSON object")
-        updated_at = datetime.fromisoformat(status["updated_at"])
-        fresh = (
-            inode != previous_inode
-            and updated_at.utcoffset() is not None
-            and updated_at.timestamp() >= float(started_at)
-        )
-    except (OSError, ValueError, KeyError, TypeError):
-        fresh = False
-    if fresh:
-        if (
-            status.get("trip_id") == expected_trip
-            and status.get("active") is False
-            and status.get("disarmed") is False
-            and status.get("completed") is False
-            and status.get("shutdown_unconfirmed") is False
-            and status.get("device_faults") == 0
-        ):
-            print(updated_at.isoformat())
-            break
-        raise SystemExit("Fresh status did not show the expected trip waiting without device faults.")
-    time.sleep(1)
-else:
-    raise SystemExit("No fresh Vacation Ghost status was written within 35 seconds.")
-PY
-  ); then
-    commissioning_failed
-  fi
-  current_invocation=$(sudo systemctl show --property=InvocationID --value "$unit") || commissioning_failed
-  current_restarts=$(sudo systemctl show --property=NRestarts --value "$unit") || commissioning_failed
-  if [ "$current_invocation" != "$invocation" ] ||
-     [ "$current_restarts" != 0 ] ||
-     ! sudo systemctl is-active --quiet "$unit"; then
-    commissioning_failed
-  fi
-  printf 'Vacation Ghost is idle and waiting for departure (%s).\n' "$idle_at"
-  sudo systemctl enable "$unit"
-)
+/usr/bin/python3 -I /opt/vacation-ghost/tools/pi_service.py commission
 ```
+
+Look for `Vacation Ghost is idle and waiting for departure` and `Startup at boot is enabled`. For the base service running as root, append `--service-user root` to the helper command.
 
 If the check fails, the unit may still be running. Inspect `sudo systemctl status vacation-ghost.service`, the journal, and the status with `sudo cat /var/lib/vacation-ghost/current/latest.json`. Keep the original config, trip state, and device reservation while you verify shutdown. If the trip is active or you cannot confirm it stayed idle, follow [Stop, recover, or change trips](#stop-recover-or-change-trips) to disarm it and handle any unconfirmed shutdown. If it stayed idle before departure, reports no pending shutdown, and the outputs are off, stop it with `sudo systemctl stop vacation-ghost.service`.
 
@@ -290,22 +204,17 @@ Retry only after the unit is stopped and the outputs are confirmed off. If you d
 
 ### Verify the setup while home
 
-Complete the [physical release checklist](hardware.md#physical-release-checklist) with your Pi, Raspberry Pi OS image, and plug models and firmware. Run a short scheduled trip and check that the clock and routine recover after a reboot, the plug timers turn the lamps off when the Pi loses power or network access, and both lamps switch off when the trip ends. Compare what you observed with the [local reports](#read-reports-locally). The checklist includes separate tests for scheduled and early shutdown.
+Record results in a private copy of the [bench record](bench.md). Complete the [physical release checklist](hardware.md#physical-release-checklist) with your Pi, Raspberry Pi OS image, and plug models and firmware. Run a short scheduled trip and check that the clock and routine recover after a reboot, the plug timers turn the lamps off when the Pi loses power or network access, and both lamps switch off when the trip ends. Compare what you observed with the [local reports](#read-reports-locally). The checklist includes separate tests for scheduled and early shutdown.
 
 ## Stop, recover, or change trips
 
-Use `disarm` with the same config and trip state directory to end a trip early, including while the service runs. The disarm request persists across reboot. If the request queues, wait for the runner to finish and check `/var/lib/vacation-ghost/current/latest.json` to confirm shutdown. Keep the original plug settings and state directory until off is confirmed. Set `service_user=root` for the base service with optional hardware.
+Use the [service helper](#install-the-service-helper) to disarm the installed trip with its original configuration. The disarm request persists across reboots. After sending the request, the helper waits up to two minutes for the runner to release its locks, the matching trip to show terminal status, and any outstanding shutdown reservation to clear. If a trip ended before departure, the same checks establish that nothing is pending. For the base service, append `--service-user root`.
 
 ```sh
-(
-  set -eu
-  service_user=vacation-ghost
-  cd /opt/vacation-ghost
-  sudo -u "$service_user" -g "$service_user" /opt/vacation-ghost/.venv/bin/python -m vacation_ghost \
-    --config /etc/vacation-ghost/vacation.toml disarm --state-dir /var/lib/vacation-ghost/current
-  sudo -u "$service_user" -g "$service_user" cat /var/lib/vacation-ghost/current/latest.json
-)
+/usr/bin/python3 -I /opt/vacation-ghost/tools/pi_service.py disarm
 ```
+
+Continue after `The configured trip has ended. No output shutdown is pending.` Keep the original plug settings and state directory on a timeout or any error.
 
 If shutdown is unconfirmed, stop an installed scheduled service with `sudo systemctl stop vacation-ghost.service`. Check the lamps directly and fix any connection issue. Use `recover` with the original config and state directory. For a failed rehearsal, substitute its printed state directory for `current`. `recover` only attempts to turn outputs off. It may confirm shutdown and print a separate warning if it cannot refresh the existing reports.
 
@@ -327,25 +236,18 @@ After confirmed shutdown, disable the unit to prevent automatic startup at boot.
 
 The checks in this section apply to the current development checkout. For the tagged Preview 2 installation, use the shutdown and recovery steps above.
 
-- `doctor` identifies unknown configuration keys before hardware checks. It shows the effective LED backend, GPIO pin, and pixel count when glow is enabled, and the configured volume when sound is enabled.
-- Before operating outputs, a development checkout records each Shelly device’s identity. If a plug’s IP address was reassigned, restore the original plugs and their reserved addresses, then repeat `recover` with the original config and state. Recovery can turn off verified plugs and keeps the reservation while any required output remains unconfirmed.
+- Run `plan` with a config to see the resolved local trip times and planned lamp runs without device access. Run `--version` without a config to identify the installed build.
+- `doctor` identifies unknown configuration keys before hardware checks and reads switch channel 0 via local `Switch.GetConfig` to check power-restore off, auto-on disabled and auto-off enabled with a positive delay. Preview 2 requires the manual checks above. It shows the effective LED backend, GPIO pin, and pixel count when glow is enabled, and the configured volume when sound is enabled.
+- In a development checkout, run `pair` with the installed service account and config before a rehearsal or trip. Pairing records both room-to-device assignments across shutdowns. To change a verified replacement, disarm and finish recovery first, then use `pair --replace` and rehearse again. If a plug’s IP address was reassigned, restore the original plugs and their reserved addresses, then repeat `recover` with the original config and state. Recovery can turn off verified plugs and keeps the reservation while any required output remains unconfirmed.
 - A Preview 2 reservation records a fingerprint of the original config. Prefer recovery with the original installation. The development checkout can attempt an off-only recovery using the matching config and warns when it has to rely on its addresses. Check both plugs directly.
 - If recovery confirms shutdown but reports that it could not refresh the JSON status, restore the original state storage and rerun the same `recover` command. The development checkout preserves the shutdown confirmation so it can retry the report update.
 
 ### Start a new trip
 
-Confirm shutdown with the original configuration and state directory. Disable startup at boot and stop the unit before archiving `current`. The archive contains the earlier trip’s disarm and completion records. If the old dates are still active, automatic startup with a fresh `current` could resume that trip. Keep `/var/lib/vacation-ghost/device` in place.
+Keep the original config and state in place and wait for disarm or scheduled completion. The helper disables startup at boot, stops the unit and checks the trip identity, terminal status, outstanding device reservation and recovery records under the controller locks before moving `current` to a private archive. A failed check leaves `current` available for recovery. Keep `/var/lib/vacation-ghost/device` in place. For the base service append `--service-user root`.
 
 ```sh
-(
-  set -eu
-  sudo systemctl disable --now vacation-ghost.service
-  if sudo test -d /var/lib/vacation-ghost/current; then
-    trip_backup=$(sudo mktemp -d /var/lib/vacation-ghost/trip-previous.XXXXXX)
-    sudo mv -T /var/lib/vacation-ghost/current "$trip_backup/current"
-    printf 'Previous trip saved in %s\n' "$trip_backup/current"
-  fi
-)
+/usr/bin/python3 -I /opt/vacation-ghost/tools/pi_service.py archive
 ```
 
 Set the new trip dates and run [Check and start](#check-and-start) again. The service creates a fresh `current` directory and the commissioning check enables boot startup once the new trip is waiting.
@@ -365,7 +267,9 @@ For an upgrade with the same service profile, keep `/etc/vacation-ghost` and `/v
 )
 ```
 
-For a profile change, move the old state into a private archive after shutdown is confirmed. The new account needs a fresh state tree because `/var/lib/vacation-ghost/device` belongs to the active profile. Use new trip dates when starting a new deployment.
+For any profile change, first run the guarded [trip archive](#start-a-new-trip) with the original profile and config. When switching between lights-only and an unprivileged USB/SPI profile on the same `vacation-ghost` account, keep the rest of `/var/lib/vacation-ghost` in place. This preserves the room assignments in `device/paired-plugs.json`. Update the drop-ins for your [new device profile](device-profiles.md), set future dates and rehearse again.
+
+Run the following block **only when changing service accounts**, such as moving between a dedicated-account profile and the root PWM service. The new account needs a fresh state tree. Archive the old tree after the guarded trip archive succeeds, then set new dates and pair again if the installed version supports pairing.
 
 ```sh
 (
@@ -376,23 +280,28 @@ For a profile change, move the old state into a private archive after shutdown i
 )
 ```
 
-To switch to lights-only, set `led_count = 0` and `volume = 0` in `/etc/vacation-ghost/vacation.toml`, then follow the [lights-only setup](#use-the-lights-only-profile). To switch from lights-only to the base service with device access, remove the lights-only drop-in, restore the root-only config and state permissions, and enable the optional hardware you intend to use.
+To switch to lights-only, set `led_count = 0` and `volume = 0` in `/etc/vacation-ghost/vacation.toml`, then follow the [lights-only setup](#use-the-lights-only-profile). To switch from a dedicated-account profile to the root base service for PWM or tagged Preview 2, remove the project’s profile drop-ins and restore the root-only config and state permissions. Keep unrelated local service overrides.
 
 ```sh
 (
   set -eu
-  sudo rm -f /etc/systemd/system/vacation-ghost.service.d/lights-only.conf
+  dropins=/etc/systemd/system/vacation-ghost.service.d
+  sudo rm -f "$dropins/lights-only.conf" "$dropins/10-device-user.conf" \
+    "$dropins/20-usb-audio.conf" "$dropins/20-spi-glow.conf"
   sudo chown root:root /etc/vacation-ghost /etc/vacation-ghost/vacation.toml
   sudo chmod 0700 /etc/vacation-ghost
   sudo chmod 0600 /etc/vacation-ghost/vacation.toml
   sudo install -d -o root -g root -m 0700 /var/lib/vacation-ghost
   sudo systemctl daemon-reload
+  systemctl show vacation-ghost.service -p User -p PrivateDevices
 )
 ```
 
+Check that `User` is empty (the root default) or `root`, and that `PrivateDevices=no`. Remove previously added `audio` and `spi` memberships from the dedicated account when retiring that profile.
+
 ## Optional TV glow and sound
 
-For a first build, start with the [lights-only hardware checks](#verify-the-setup-while-home). To add glow or sound to a lights-only installation, follow the [profile change procedure](#upgrade-or-switch-profiles) to switch to the base service. For a fresh base installation, [prepare the Pi](#prepare-the-pi-and-plugs), [install the release](#install-from-a-verified-release), and [set the trip and plug addresses](#set-the-trip-and-plug-addresses) before configuring the optional outputs below. The base service uses the root account.
+For a first build, start with the [lights-only hardware checks](#verify-the-setup-while-home). To add glow or sound to a lights-only installation, follow the [profile change procedure](#upgrade-or-switch-profiles) to switch to the base service. For a fresh base installation, [prepare the Pi](#prepare-the-pi-and-plugs), [install the release](#install-from-a-verified-release), and [set the trip and plug addresses](#set-the-trip-and-plug-addresses) before configuring the optional outputs below. The Preview 2 base service uses the root account. On `main`, a [dedicated service account for USB audio or SPI glow](device-profiles.md) can access the selected devices.
 
 Preview 2’s TV-glow setup uses the `rpi-ws281x` PWM driver on a Pi Zero 2 W or Pi 4. See the [LED driver and board requirements](hardware.md#optional-glow-and-sound) and the separate [Pi 5 bench instructions](#try-pi-5-tv-glow-from-a-development-checkout). In `[hardware]`, set `led_count` to the number of connected pixels and use `led_pin = 18` for BCM GPIO18 on physical header pin 12. This recipe uses PWM channel 0 and an 800 kHz GRB strip. The base service runs as root for PWM/DMA access. If your OS offers a compatible distribution-signed driver package, install it through the OS package manager and run `sudo /usr/bin/python3 -I -m venv --system-site-packages /opt/vacation-ghost/.venv` so the service can load it. [Wiring guide](hardware.md#wire-the-optional-led-strip)
 
@@ -437,7 +346,7 @@ Follow [Check and start](#check-and-start) with `service_user=root`, then run a 
 
 ### Try Pi 5 TV glow from a development checkout
 
-Use a Raspberry Pi 5 with Raspberry Pi OS, two configured Shelly plugs, and an 800 kHz WS2812B-compatible GRB strip. This bench procedure uses the SPI driver from `main`. Preview 2 uses the PWM recipe above. Physical glow and blackout tests are pending.
+Use a Raspberry Pi 5 with Raspberry Pi OS, two configured Shelly plugs, and an 800 kHz WS2812B-compatible GRB strip. This bench procedure uses the SPI driver from `main`. The [device profile guide](device-profiles.md) covers scheduled operation with a dedicated account. Preview 2 uses the PWM recipe above. Physical glow and blackout tests are pending.
 
 Start with a Pi that has no running Vacation Ghost installation. If you already have one, confirm shutdown using its original config and state, then disable and stop the unit. This test runs as root and shares the device reservation at `/var/lib/vacation-ghost/device`. Follow the [profile change procedure](#upgrade-or-switch-profiles) if a different service account owns the existing state. Keep the bench test separate from the scheduled unit.
 
@@ -474,11 +383,21 @@ In the same shell, stage the reviewed code and a private config in a separate ro
 ```sh
 spi_app=$(
   set -eu
+  spi_commit=$(git -C "${spi_checkout:?}" rev-parse --verify HEAD)
+  source_stage=$(mktemp -d)
+  git -C "$spi_checkout" --no-replace-objects archive --format=tar "$spi_commit" > "$source_stage/source.tar"
+  tar -xf "$source_stage/source.tar" -C "$source_stage"
   target=$(sudo mktemp -d /opt/vacation-ghost-spi.XXXXXX)
   sudo install -d -o root -g root -m 0700 "$target/vacation_ghost"
-  sudo install -o root -g root -m 0644 "${spi_checkout:?}"/vacation_ghost/*.py "$target/vacation_ghost/"
+  sudo install -o root -g root -m 0644 "$source_stage"/vacation_ghost/*.py "$target/vacation_ghost/"
+  /usr/bin/python3 -I - "$source_stage/pyproject.toml" "$spi_commit" > "$source_stage/BUILD.json" <<'PYTHON'
+import json, sys, tomllib
+with open(sys.argv[1], "rb") as metadata:
+    print(json.dumps({"version": tomllib.load(metadata)["project"]["version"], "commit": sys.argv[2]}))
+PYTHON
+  sudo install -o root -g root -m 0644 "$source_stage/BUILD.json" "$target/vacation_ghost/BUILD.json"
   sudo install -o root -g root -m 0600 \
-    "$spi_checkout/examples/vacation.lights-only.toml" "$target/vacation.toml"
+    "$source_stage/examples/vacation.lights-only.toml" "$target/vacation.toml"
   printf '%s\n' "$target"
 )
 ```
@@ -492,7 +411,7 @@ led_count = 30
 volume = 0
 ```
 
-Run `doctor` to check SPI0 adapter access and reachability for both plugs without sending an LED frame. Then run a foreground rehearsal while you are home. Save the two printed paths.
+Run `doctor` to check SPI0 adapter access and reachability for both plugs without sending an LED frame. Then run `pair` to record both room assignments, and run a foreground rehearsal while you are home. Save the two printed paths.
 
 ```sh
 rehearsal_dir=$(sudo mktemp -d "${spi_app:?}/rehearsal.XXXXXX")
@@ -500,7 +419,9 @@ printf 'Bench config is in %s/vacation.toml\nRehearsal state is in %s\n' "$spi_a
 sudo sh -c '
   set -eu
   cd "$1"
+  /usr/bin/python3 -Es -m vacation_ghost --version
   /usr/bin/python3 -Es -m vacation_ghost --config "$1/vacation.toml" doctor
+  /usr/bin/python3 -Es -m vacation_ghost --config "$1/vacation.toml" pair
   exec /usr/bin/python3 -Es -m vacation_ghost --config "$1/vacation.toml" rehearse --state-dir "$2"
 ' sh "${spi_app:?}" "${rehearsal_dir:?}"
 ```

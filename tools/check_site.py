@@ -33,6 +33,7 @@ DEMO_SCENES = {
     "Morning kitchen": ("morning", "dawn", "sound", "kettle"),
     "Morning note": ("report", "dawn", "report", ""),
 }
+LIGHTS_ONLY_SCENES = ("Sunset", "After dinner", "Bedtime", "Morning note")
 DEMO_AUDIO = ("assets/demo-tv.mp3", "assets/demo-cabinet.mp3", "assets/demo-kettle.mp3")
 SCENE_DELAY = 3000
 SCENE_SECONDS = SCENE_DELAY / 1000
@@ -141,6 +142,7 @@ def check_source(page):
     subprocess.run(["node", "--check", SITE / "site.js"], check=True)
     for name in ("setup-code-simulator", "setup-code-pi"):
         subprocess.run(["sh", "-n"], input=page.text[name], text=True, check=True)
+    assert f"git clone --depth 1 --branch {tag} {REPOSITORY}.git" in page.text["setup-code-simulator"]
     assert f"git checkout --quiet --detach {revision}\n" in page.text["setup-code-simulator"]
     check_pi_setup(page.text["setup-code-pi"], revision)
 
@@ -289,6 +291,8 @@ def assert_demo_ready(page):
 def check_scene_selection(page, width, height, schedule):
     page.locator('.hero a[href="#sample-evening"]').click()
     assert_demo_ready(page)
+    page.locator("#scene-extras").check()
+    page.locator(".hero-watch").click()
     picker = page.locator(".routine-picker")
     assert picker.locator("summary").inner_text() == "Jump to a scene", width
     assert picker.evaluate("picker => picker.open") == (width > 480), width
@@ -377,12 +381,14 @@ def check_scene_selection(page, width, height, schedule):
     assert page.evaluate("location.hash") == "#parts", width
 
 
-def open_clocked_demo(page, url):
+def open_clocked_demo(page, url, *, extras=True):
     page.bring_to_front()
     start = datetime(2030, 6, 10, tzinfo=UTC)
     page.clock.install(time=start)
     page.clock.pause_at(start + timedelta(minutes=1))
     page.goto(url)
+    if extras:
+        page.locator("#scene-extras").evaluate("checkbox => checkbox.click()")
     page.locator(".routine-card").evaluate("card => card.scrollIntoView({ block: 'start', behavior: 'instant' })")
 
 
@@ -708,7 +714,7 @@ def check_demo_entry_points(page, url):
             page.goto(f"{url}?demo={width}-{motion}")
             page.locator('.hero a[href="#sample-evening"]').click()
             assert page.evaluate("location.hash") == "#sample-evening"
-            assert_sound_state(page, False)
+            assert page.locator("#scene-sound").is_hidden()
             focused = "#scene-next" if motion == "reduce" else "#scene-play"
             assert page.locator(focused).evaluate("button => document.activeElement === button")
             if motion == "reduce":
@@ -744,11 +750,92 @@ def check_demo_entry_points(page, url):
         if control == "#scene-next":
             next_scene.press("Enter")
             assert page.locator("#scene-name").inner_text() == "After dinner"
-    for _ in list(DEMO_SCENES)[1:]:
+    for _ in LIGHTS_ONLY_SCENES[1:]:
         next_scene.press("Enter")
     assert_sample_report(page, True)
     receipt = page.locator("#sample-report").bounding_box()
     assert 0 <= receipt["y"] < receipt["y"] + receipt["height"] <= 568, receipt
+
+
+def check_phone_walkthrough(browser, url):
+    with browser.new_context(viewport={"width": 390, "height": 844}, reduced_motion="reduce",
+                             is_mobile=True, has_touch=True) as context:
+        page = context.new_page()
+        page.goto(f"{url}#sample-evening-transcript")
+        assert page.locator(".routine-transcript ol").is_visible()
+        watch = page.locator(".hero-watch")
+        watch.click()
+        assert_demo_ready(page)
+        assert page.locator("#scene-sound").is_hidden()
+        next_scene = page.locator("#scene-next")
+        for name in LIGHTS_ONLY_SCENES:
+            next_scene.click()
+            assert page.locator("#scene-name").inner_text() == name
+            assert page.locator(".routine-scene").get_attribute("data-glow") == "none"
+            assert page.locator(".routine-scene").get_attribute("data-cue") == "none"
+        receipt = page.locator("#sample-report-text").inner_text()
+        assert receipt in page.locator(".scene-caption[aria-live]").inner_text()
+        assert_sample_report(page, True)
+        watch.click()
+        assert_demo_ready(page)
+        assert next_scene.is_enabled()
+        assert next_scene.evaluate("el => el === document.activeElement")
+        next_scene.click()
+        assert page.locator("#scene-name").inner_text() == "Sunset"
+        page.locator("#scene-extras").check()
+        assert page.locator("#scene-name").inner_text() == "Sunset"
+        page.locator(".routine-picker summary").click()
+        choices = page.get_by_role("group", name="Sample scenes")
+        choices.get_by_role("button", name="TV time", exact=True).click()
+        assert page.locator(".routine-scene").get_attribute("data-glow") == "sports"
+        page.locator("#scene-extras").uncheck()
+        assert page.locator("#scene-name").inner_text() == "After dinner"
+        assert choices.get_by_role("button").all_text_contents() == list(LIGHTS_ONLY_SCENES)
+        assert page.locator("#scene-sound").is_hidden()
+        assert page.locator("#scene-audio").get_attribute("src") is None
+        choices.get_by_role("button", name="Morning note", exact=True).click()
+        page.locator("#scene-extras").check()
+        assert_demo_ready(page)
+        assert next_scene.is_enabled()
+    with browser.new_context(java_script_enabled=False) as context:
+        page = context.new_page()
+        page.goto(f"{url}#sample-evening-transcript")
+        assert page.locator(".routine-transcript ol").is_visible()
+
+
+def check_default_playback(page, url):
+    open_clocked_demo(page, url, extras=False)
+    page.locator("#scene-play").dispatch_event("click")
+    beat = int(DEMO_DURATION * 1000 / (len(LIGHTS_ONLY_SCENES) - 1))
+    for current, following in zip(LIGHTS_ONLY_SCENES, LIGHTS_ONLY_SCENES[1:]):
+        page.clock.run_for(beat - 1)
+        assert page.locator("#scene-name").inner_text() == current
+        page.clock.run_for(1)
+        assert page.locator("#scene-name").inner_text() == following
+    assert_progress(page.locator("#scene-progress"), DEMO_DURATION)
+    assert_sample_report(page, True)
+
+
+def check_audio_unavailable(page, url):
+    from playwright.sync_api import expect
+
+    page.add_init_script("""
+        HTMLMediaElement.prototype.play = () => Promise.reject(new Error('playback blocked'));
+    """)
+    open_clocked_demo(page, url)
+    group = page.get_by_role("group", name="Sample scenes")
+    group.get_by_role("button", name="TV time", exact=True).dispatch_event("click")
+    page.locator("#scene-play").dispatch_event("click")
+    page.locator("#scene-sound").dispatch_event("click")
+    status = page.locator("#scene-audio-status")
+    expect(status).to_contain_text("Sound unavailable")
+    assert_sound_state(page, False)
+    page.clock.run_for(SCENE_DELAY)
+    assert_scene(page, group, "Kitchen break")
+    page.evaluate("() => { HTMLMediaElement.prototype.play = () => Promise.resolve(); }")
+    page.locator("#scene-sound").dispatch_event("click")
+    assert_sound_state(page, True)
+    expect(status).to_be_empty()
 
 
 def check_faq_disclosure(page, url):
@@ -784,7 +871,7 @@ def check_scene_picker_resize(page, url):
     page.wait_for_function(picker_open, arg=False)
 
 
-def check_browser(schedule):
+def check_browser(schedule, *, webkit=False):
     from playwright.sync_api import sync_playwright
 
     executable = shutil.which("chromium") or shutil.which("google-chrome")
@@ -813,6 +900,7 @@ def check_browser(schedule):
                     build = hero.get_by_role("link", name="Build it on a Pi", exact=True)
                     assert build.get_attribute("href") == "#parts" and build.bounding_box()["height"] >= 44, width
                     if width <= 760:
+                        assert page.locator(".routine-card").bounding_box()["y"] < page.locator(".routine-copy").bounding_box()["y"]
                         image = hero.locator(".hero-figure").bounding_box()
                         assert watch_box["y"] < image["y"] < height, width
                         assert build.bounding_box()["y"] >= image["y"] + image["height"], width
@@ -856,6 +944,8 @@ def check_browser(schedule):
                     page.on("pageerror", lambda error: errors.append(str(error)))
                     check_demo_playback(page, url)
                     assert not errors, errors
+                    check_default_playback(context.new_page(), url)
+                    check_audio_unavailable(context.new_page(), url)
                     check_demo_selected_start(context.new_page(), url)
                     check_demo_auto_pause(context.new_page(), url)
                     check_scene_picker_resize(context.new_page(), url)
@@ -871,10 +961,14 @@ def check_browser(schedule):
                 assert page.locator(".routine-scene").get_attribute("data-scene") == "kitchen"
                 assert_scheduled_state(page, "Sunset", schedule)
                 assert_window_lamps(page, 1, 0)
-                transcript = page.get_by_text("Read the sample evening", exact=True)
-                transcript.press("Enter")
+                page.goto(f"{url}#sample-evening-transcript")
                 assert page.locator(".routine-transcript ol").is_visible()
                 assert_sample_report(page, True)
+                check_phone_walkthrough(browser, url)
+                browser.close()
+                if webkit:
+                    with playwright.webkit.launch() as safari_engine:
+                        check_phone_walkthrough(safari_engine, url)
         finally:
             server.shutdown()
             thread.join()
@@ -883,15 +977,18 @@ def check_browser(schedule):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--browser", action="store_true", help="also exercise the pages in Chromium using Playwright")
+    parser.add_argument("--webkit", action="store_true", help="include WebKit phone checks in the browser suite")
     args = parser.parse_args()
     page = PageSource()
     page.feed((SITE / "index.html").read_text(encoding="utf-8"))
     check_source(page)
     schedule = check_simulator(page)
     print("Website links, assets, shell snippets, and pinned simulator output passed.")
-    if args.browser:
-        check_browser(schedule)
-        print("Browser checks across seven viewport sizes and without JavaScript passed.")
+    if args.browser or args.webkit:
+        check_browser(schedule, webkit=args.webkit)
+        print("Chromium checks across seven viewport sizes and without JavaScript passed.")
+        if args.webkit:
+            print("WebKit phone walkthrough, replay, transcript, and morning note passed.")
 
 
 if __name__ == "__main__":

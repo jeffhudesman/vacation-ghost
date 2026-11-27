@@ -54,18 +54,8 @@
 
     <section id="how" class="routine-section">
       <div class="shell routine-grid">
-        <div class="routine-copy">
-          <p class="eyebrow">How it works</p>
-          <h2>An evening<br><em>that changes.</em></h2>
-          <p>Activity starts near sunset with one lamp on at a time. Bedtime shifts a little from night to night, and the kitchen may light up briefly the next morning.</p>
-          <dl class="routine-details">
-            <div><dt><span aria-hidden="true">✦</span> Optional glow and sound</dt><dd>Add TV-style glow and short sounds like a kettle or a closing cabinet.</dd></div>
-            <div><dt><span aria-hidden="true">◒</span> A note in the morning</dt><dd>The Pi saves when the lamps ran and whether any device had trouble.</dd></div>
-            <div><dt><span aria-hidden="true">◇</span> Private by design</dt><dd>Trip dates stay on the Pi. No camera, microphone, or cloud account.</dd></div>
-          </dl>
-        </div>
         <div class="routine-card" id="sample-evening" role="region" aria-labelledby="sample-evening-title">
-          <div class="routine-card-header"><span id="sample-evening-title">From the sidewalk</span><span class="sample-label">Selected scenes</span></div>
+          <div class="routine-card-header"><span id="sample-evening-title">From the sidewalk</span><span class="sample-label" id="demo-mode">Two lamps</span></div>
           <div class="routine-frame">
             <div class="routine-scene" data-scene="kitchen" data-lamp="kitchen" data-glow="none" data-period="evening" data-cue="none" aria-hidden="true">
               <img class="scene-photo" src="assets/outside-view.webp" width="960" height="640" loading="lazy" alt="">
@@ -95,9 +85,11 @@
               <div class="routine-playback">
                 <button class="scene-play" id="scene-play" type="button">Play demo</button>
                 <button class="scene-restart" id="scene-restart" type="button">Restart</button>
-                <button class="scene-sound" id="scene-sound" type="button" aria-pressed="false">Sound <span id="scene-sound-state" aria-hidden="true">off</span></button>
+                <button class="scene-sound" id="scene-sound" type="button" aria-pressed="false" hidden>Sound <span id="scene-sound-state" aria-hidden="true">off</span></button>
               </div>
               <progress class="scene-progress" id="scene-progress" value="0" max="21" aria-label="Demo progress"></progress>
+              <label class="routine-extras"><input type="checkbox" id="scene-extras"> Include optional glow and sound</label>
+              <p id="scene-audio-status" class="audio-status" role="status"></p>
               <details class="routine-picker" open>
                 <summary>Jump to a scene</summary>
                 <div class="routine-steps" role="group" aria-label="Sample scenes">
@@ -121,13 +113,13 @@
               </details>
               <audio id="scene-audio" preload="none"></audio>
             </div>
-            <details class="routine-transcript">
+            <details class="routine-transcript" open>
               <summary id="sample-evening-transcript">Read the sample evening</summary>
               <ol>
-                <li>The kitchen lamp switches on near sunset.</li>
-                <li>After dinner, the living room lamp takes a turn. Optional TV glow and household sounds accompany the evening.</li>
-                <li>The lamps go out at bedtime, and the kitchen lamp comes on briefly in the morning.</li>
-                <li>The morning report summarizes the previous evening’s lamp activity.</li>
+                <li>At 7:34 PM, the kitchen lamp switches on near sunset.</li>
+                <li>At 8:10 PM, the living room lamp takes a turn. An optional strip and speaker can add TV glow and household sounds.</li>
+                <li>The last lamp goes out at 10:45 PM. The kitchen lights up briefly the next morning.</li>
+                <li>At 8 AM, the simulator reports 3 hours and 11 minutes of lamp activity the previous evening.</li>
               </ol>
             </details>
             <div class="routine-next">
@@ -135,6 +127,16 @@
               <a href="#setup-panel-simulator">Try the Linux simulator <span aria-hidden="true">↓</span></a>
             </div>
           </div>
+        </div>
+        <div class="routine-copy">
+          <p class="eyebrow">How it works</p>
+          <h2>An evening<br><em>that changes.</em></h2>
+          <p>Activity starts near sunset with one lamp on at a time. Bedtime shifts a little from night to night, and the kitchen may light up briefly the next morning.</p>
+          <dl class="routine-details">
+            <div><dt><span aria-hidden="true">✦</span> Optional glow and sound</dt><dd>Add TV-style glow and short sounds like a kettle or a closing cabinet.</dd></div>
+            <div><dt><span aria-hidden="true">◒</span> A note in the morning</dt><dd>The Pi saves when the lamps ran and whether any device had trouble.</dd></div>
+            <div><dt><span aria-hidden="true">◇</span> Private by design</dt><dd>Trip dates stay on the Pi. No camera, microphone, or cloud account.</dd></div>
+          </dl>
         </div>
       </div>
     </section>
@@ -209,7 +211,7 @@
                   <pre><code id="setup-code-simulator">(
   set -eu
   demo_dir=$(mktemp -d "${TMPDIR:-/tmp}/vacation-ghost-demo.XXXXXX")
-  git clone https://github.com/jeffhudesman/vacation-ghost.git \
+  git clone --depth 1 --branch v0.1.0-preview.2 https://github.com/jeffhudesman/vacation-ghost.git \
     "$demo_dir/vacation-ghost"
   cd "$demo_dir/vacation-ghost"
   git checkout --quiet --detach 34d794e52c58b3cfb02027f728ae842d26ae03af

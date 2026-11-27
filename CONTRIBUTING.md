@@ -76,12 +76,13 @@ Fetch the preview tags and check the site’s links, assets, and simulator instr
 ```sh
 git fetch origin --tags
 python3 tools/check_site.py
+python3 tools/check_docs.py
 ```
 
-For browser checks, install `playwright==1.62.0` in your development environment and run `python3 tools/check_site.py --browser` with Chromium or Chrome installed.
+For browser checks, install `playwright==1.62.0` in your development environment and run `python3 tools/check_site.py --browser` with Chromium or Chrome installed. CI also installs WebKit with `python3 -m playwright install --with-deps webkit` and runs `python3 tools/check_site.py --browser --webkit` for the mobile walkthrough.
 
 ## Website deployment
 
-The [Deploy website workflow](.github/workflows/pages.yml) runs when a maintainer dispatches it on `main`. It validates the site and pinned simulator before uploading the Pages artifact.
+Changes to the website or its deployment workflow on `main` trigger Pages. Maintainers can also dispatch it manually. The workflow checks the public revision, homepage, stylesheet and JavaScript against the deployed commit. Tagged prereleases must pass the Python matrix, documentation, website and installed-package checks before publication. [Pages workflow](.github/workflows/pages.yml) · [Prerelease workflow](.github/workflows/preview-release.yml)
 
 The project uses the [MIT License](LICENSE). Keep third-party code and custom WAV files under terms that allow redistribution before adding them to the project.

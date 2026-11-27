@@ -92,13 +92,19 @@ def _fault_summary(faults: list[_DeviceFault], shutdown_unconfirmed: bool) -> di
     }
 
 
-def _fault_message(faults: dict) -> str:
+def _fault_message(faults: dict, *, historical: bool = False) -> str:
     message = ""
     if faults["device_faults"]:
         devices = ", ".join(faults["faults_by_device"])
         message = f" Device controls reported faults ({devices})."
     if faults["shutdown_unconfirmed"]:
-        message += " Output shutdown could not be confirmed."
+        if historical:
+            message += (
+                " At the time of an earlier fault, output shutdown could not be confirmed."
+                " Check latest.json for the current result."
+            )
+        else:
+            message += " Output shutdown could not be confirmed."
     return message
 
 
@@ -160,7 +166,9 @@ class ReportStore:
         self._schedule_notes: dict[date, str] = {}
         self._disarmed_at: datetime | None = None
         self._completed_at: datetime | None = None
-        self._last_status: tuple[bool, str | None, bool, bool, int, bool, bool | None, bool | None] | None = None
+        self._last_status: tuple[
+            bool, str | None, bool, bool, int, bool, bool | None, bool | None, str | None,
+        ] | None = None
         self._next_night = trip_start.date()
         self._trip_published = False
         self._restore_journal()
@@ -350,12 +358,31 @@ class ReportStore:
             self._schedule_notes[day] = note
             self._save_journal()
 
+    def write_rehearsal(
+        self, at: datetime, outcome: str, lamps: list[str], cues: list[str], color_sent: bool,
+    ) -> None:
+        """Save controller observations for the operator's bench checklist."""
+        _write_json(self.state_dir / "rehearsal.json", {
+            "schema_version": 1,
+            "ended_at": at.astimezone(self._zone).isoformat(),
+            "outcome": outcome,
+            "lamps_confirmed_on": lamps,
+            "sound_cues_started": cues,
+            "led_color_frame_sent": color_sent,
+            "relay_off_verified": self.relay_off_verified,
+            "led_black_frame_sent": self.led_black_frame_sent,
+            "shutdown_unconfirmed": self.shutdown_unconfirmed,
+        })
+
     def _record_interval(self, start: datetime, end: datetime) -> None:
         start, end = max(start, self._start), min(end, self._effective_end)
         if start < end:
             self._intervals.append((start, end))
 
-    def status(self, now: datetime, active: bool, room: str | None, *, force: bool = False) -> None:
+    def status(
+        self, now: datetime, active: bool, room: str | None, *, force: bool = False,
+        startup_error: str | None = None,
+    ) -> None:
         """Update the latest state and periodically checkpoint an active lamp run."""
         now_utc = _utc(now)
         if active and self._open is not None and room == self._open.room:
@@ -367,13 +394,15 @@ class ReportStore:
         completed = self.completed_at is not None
         state = (
             active, room, disarmed, completed, len(self._faults), self._shutdown_unconfirmed,
-            self._relay_off_verified, self._led_black_frame_sent,
+            self._relay_off_verified, self._led_black_frame_sent, startup_error,
         )
         if force or self._last_status != state:
             if disarmed:
                 message = "Vacation Ghost is disarmed."
             elif completed:
                 message = "Vacation Ghost finished the trip."
+            elif startup_error is not None:
+                message = f"Vacation Ghost could not start the trip. {startup_error}"
             else:
                 message = "Vacation Ghost is active." if active else "Vacation Ghost is idle."
             faults = _fault_summary(self._faults, self._shutdown_unconfirmed)
@@ -386,6 +415,7 @@ class ReportStore:
                 "dry_run": self._dry_run,
                 "disarmed": disarmed,
                 "completed": completed,
+                "startup_error": startup_error,
                 "relay_off_verified": self._relay_off_verified,
                 "led_black_frame_sent": self._led_black_frame_sent,
                 **faults,
@@ -468,6 +498,11 @@ class ReportStore:
                 return False
 
             if delivery_date is None:
+                if any(record.get(key) is not None and type(record[key]) is not bool
+                       for key in ("relay_off_verified", "led_black_frame_sent")):
+                    return False
+                if "longest_lamp_run_seconds" in record and not _nonnegative_int(record["longest_lamp_run_seconds"]):
+                    return False
                 return _nonnegative_int(record["nights_with_lamp_activity"]) and isinstance(
                     record.get("ended_early", False), bool
                 )
@@ -524,7 +559,7 @@ class ReportStore:
             "schedule_note": note,
             **metrics,
             **faults,
-            "message": self._prefix + message + _fault_message(faults),
+            "message": self._prefix + message + _fault_message(faults, historical=True),
         })
 
     def _write_trip_report(self, now: datetime) -> None:
